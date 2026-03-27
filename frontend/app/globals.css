@@ -1,27 +1,78 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: #ffffff;
-    --foreground: #1f2937;
-  }
+    --bg-primary: #0a0b0f;
+    --bg-secondary: #11141c;
+    --bg-card: #161b27;
+    --bg-card-hover: #1e2536;
+    --border-subtle: #1e2d45;
+    --border-bright: #2a3f5f;
+    --accent-blue: #3b82f6;
+    --accent-violet: #8b5cf6;
+    --accent-green: #22c55e;
+    --accent-red: #ef4444;
+    --accent-gold: #f59e0b;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #475569;
+    --glass-bg: rgba(22, 27, 39, 0.8);
+    --glass-border: rgba(46, 63, 95, 0.5);
 
-  .dark {
-    --background: #0a0e1a;
-    --foreground: #e0e0e0;
+    /* Legacy compatibility */
+    --background: #0a0b0f;
+    --foreground: #f1f5f9;
   }
 
   body {
-    background-color: var(--background);
-    color: var(--foreground);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', system-ui, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+
+  h1, h2, h3 {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+  ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent-blue); }
 }
 
 @layer utilities {
-  .text-balance {
-    text-wrap: balance;
+  .text-balance { text-wrap: balance; }
+  .mono { font-family: 'JetBrains Mono', 'Courier New', monospace; }
+
+  @keyframes shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position:  200% 0; }
   }
+  .skeleton {
+    background: linear-gradient(90deg,
+      var(--bg-card) 25%, var(--bg-card-hover) 50%, var(--bg-card) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 6px;
+  }
+
+  .tf-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+  }
+  .tf-card-hover:hover {
+    border-color: var(--border-bright);
+    background: var(--bg-card-hover);
+  }
+
+  .val-pos     { color: var(--accent-green); }
+  .val-neg     { color: var(--accent-red);   }
+  .val-neutral { color: var(--text-secondary); }
 }
