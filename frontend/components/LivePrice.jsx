@@ -2,11 +2,14 @@
 
 import { usePriceStream } from '../hooks/usePriceStream';
 
-const LivePrice = ({ symbol = 'BTCUSDT', exchanges = ['binance', 'bybit', 'kraken'] }) => {
+// exchanges prop removed — usePriceStream stores prices[symbol] as a bare number
+// keyed by symbol only (e.g. prices["BTCUSDT"] = 65000.0). There is no per-exchange
+// breakdown available from the hook; the last received price is shown.
+const LivePrice = ({ symbol = 'BTCUSDT' }) => {
   const { prices, isConnected } = usePriceStream();
 
   const formatPrice = (price) => {
-    if (!price) return '---';
+    if (price == null || price === 0) return '---';
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
@@ -15,15 +18,13 @@ const LivePrice = ({ symbol = 'BTCUSDT', exchanges = ['binance', 'bybit', 'krake
     }).format(price);
   };
 
-  const formatVolume = (volume) => {
-    if (!volume) return '---';
-    return volume.toFixed(4);
-  };
+  // prices[symbol] is the raw number pushed by usePriceStream
+  const currentPrice = prices[symbol];
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-      {/* Connection Status */}
-      <div className="flex items-center justify-between mb-4">
+      {/* Header with connection indicator */}
+      <div className="flex items-center justify-between mb-3">
         <h3 className="text-lg font-semibold text-white">{symbol}</h3>
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -33,34 +34,14 @@ const LivePrice = ({ symbol = 'BTCUSDT', exchanges = ['binance', 'bybit', 'krake
         </div>
       </div>
 
-      {/* Price Grid */}
-      <div className="space-y-3">
-        {exchanges.map(exchange => {
-          const priceData = prices[`${exchange}:${symbol}`];
-          
-          return (
-            <div key={exchange} className="flex items-center justify-between">
-              <div>
-                <span className="text-sm font-medium text-gray-300 capitalize">
-                  {exchange}
-                </span>
-              </div>
-              <div className="text-right">
-                <div className="text-xl font-bold text-green-400">
-                  {formatPrice(priceData?.price)}
-                </div>
-                <div className="text-xs text-gray-500">
-                  Vol: {formatVolume(priceData?.volume)}
-                </div>
-              </div>
-            </div>
-          );
-        })}
+      {/* Price display */}
+      <div className="text-2xl font-bold text-green-400">
+        {formatPrice(currentPrice)}
       </div>
 
       {/* Last Update */}
-      {Object.keys(prices).length > 0 && (
-        <div className="mt-4 pt-3 border-t border-gray-700 text-xs text-gray-500 text-center">
+      {currentPrice != null && (
+        <div className="mt-3 pt-2 border-t border-gray-700 text-xs text-gray-500">
           Last update: {new Date().toLocaleTimeString()}
         </div>
       )}

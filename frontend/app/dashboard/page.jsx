@@ -18,11 +18,29 @@ const Dashboard = () => {
         const authMeResponse = await api.get('/auth/me');
         setUser(authMeResponse.data);
 
-        const portfolioResponse = await api.get('/portfolio');
+        // Correct endpoint: /trading/portfolio (not /portfolio)
+        const portfolioResponse = await api.get('/trading/portfolio');
         setPortfolio(portfolioResponse.data);
 
-        const marketPricesResponse = await api.get('/market/prices?symbols=BTC,ETH,SOL');
-        setMarketPrices(marketPricesResponse.data);
+        // Fetch prices for each symbol individually via the correct REST endpoint.
+        // /market/prices/{symbol} returns {exchange: {price, volume, ...}, ...}
+        // Normalise to a flat {SYMBOL: {price}} map for the chart.
+        const [btcRes, ethRes, solRes] = await Promise.all([
+          api.get('/market/prices/BTCUSDT'),
+          api.get('/market/prices/ETHUSDT'),
+          api.get('/market/prices/SOLUSDT'),
+        ]);
+
+        const extractPrice = (data) => {
+          const entry = data.binance || data.bybit || data.kraken || {};
+          return { price: entry.price || 0 };
+        };
+
+        setMarketPrices({
+          BTCUSDT: extractPrice(btcRes.data),
+          ETHUSDT: extractPrice(ethRes.data),
+          SOLUSDT: extractPrice(solRes.data),
+        });
       } catch (err) {
         setError(err.message);
       }
@@ -43,8 +61,8 @@ const Dashboard = () => {
     <div className="p-6 dark:bg-gray-900">
       <h1 className="text-3xl font-bold text-white mb-6">Dashboard</h1>
       <h2 className="text-xl font-semibold text-white">Live Prices</h2>
-      <LivePrice symbol="BTCUSDT" exchanges={['binance', 'bybit']} />
-      <LivePrice symbol="ETHUSDT" exchanges={['binance']} />
+      <LivePrice symbol="BTCUSDT" />
+      <LivePrice symbol="ETHUSDT" />
       <div className="mt-4">
         <LineChart width={730} height={250} data={chartData}>
           <CartesianGrid strokeDasharray="3 3" />

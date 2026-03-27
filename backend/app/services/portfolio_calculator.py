@@ -11,6 +11,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
 from datetime import datetime
+import json
 import logging
 
 from sqlalchemy import select
@@ -35,9 +36,15 @@ class PortfolioCalculator:
     4. Return comprehensive portfolio snapshot
     """
 
-    def __init__(self, db: AsyncSession, redis: Redis):
+    def __init__(
+        self,
+        db: AsyncSession,
+        redis: Redis,
+        fallback_prices: Optional[Dict[str, Decimal]] = None,
+    ):
         self.db = db
         self.redis = redis
+        self.fallback_prices: Dict[str, Decimal] = fallback_prices or {}
 
     async def get_current_value(self, user_id: UUID) -> Dict[str, Any]:
         portfolio = await self._get_portfolio(user_id)
@@ -197,18 +204,40 @@ class PortfolioCalculator:
         return [(row[0], row[1]) for row in result.all()]
 
     async def _get_current_price(self, symbol: str) -> Optional[Decimal]:
-        """Get current price from Redis (WebSocket cache)."""
+        """Get current price from Redis (WebSocket cache).
+
+        Redis stores JSON objects: {"exchange": "binance", "price": 65000.0, "volume": 1.23}
+        Must json.loads() first — never decode as raw float.
+        Returns None if no valid price found (caller skips that holding).
+        """
         for exchange in ("binance", "kraken", "bybit"):
             redis_key = f"price:{exchange}:{symbol.upper()}"
-            price_str = await self.redis.get(redis_key)
-            if price_str:
-                try:
-                    return Decimal(price_str.decode('utf-8'))
-                except (ValueError, AttributeError) as e:
-                    logger.warning(f"Invalid price format for {symbol}: {e}")
-                    continue
+            price_bytes = await self.redis.get(redis_key)
+            if price_bytes is None:
+                continue
+            try:
+                data = json.loads(price_bytes.decode("utf-8"))
+                price = data.get("price")
+                if price is not None:
+                    return Decimal(str(price))
+                logger.warning(
+                    "Redis key %s had no 'price' field: %s", redis_key, data
+                )
+            except (json.JSONDecodeError, ValueError, AttributeError) as e:
+                logger.warning(
+                    "Failed to parse Redis price for %s: %s — %s",
+                    redis_key, price_bytes, e
+                )
+                continue
 
-        logger.warning(f"Price unavailable for {symbol} in Redis")
+        fallback = self.fallback_prices.get(symbol.upper())
+        if fallback is not None:
+            logger.warning(
+                "Using fallback price for %s: %s (Redis cache empty)", symbol, fallback
+            )
+            return fallback
+
+        logger.warning("Price unavailable for %s in Redis across all exchanges", symbol)
         return None
 
     def _empty_portfolio_response(self) -> Dict[str, Any]:

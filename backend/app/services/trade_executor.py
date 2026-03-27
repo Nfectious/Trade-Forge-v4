@@ -11,6 +11,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime, timezone
+import json
 import logging
 
 from sqlalchemy import select, update
@@ -57,9 +58,18 @@ class TradeExecutor:
     4. Update portfolio state
     """
 
-    def __init__(self, db: AsyncSession, redis: Redis):
+    def __init__(
+        self,
+        db: AsyncSession,
+        redis: Redis,
+        fallback_prices: Optional[Dict[str, Decimal]] = None,
+    ):
         self.db = db
         self.redis = redis
+        # Static prices used when Redis cache is empty (e.g. WebSocket feed down).
+        # Caller passes FALLBACK_PRICES from the router so TradeExecutor degrades
+        # gracefully instead of always raising PriceUnavailableError.
+        self.fallback_prices: Dict[str, Decimal] = fallback_prices or {}
 
     async def execute_trade(
         self,
@@ -177,20 +187,43 @@ class TradeExecutor:
         return pair
 
     async def _get_current_price(self, symbol: str) -> Decimal:
-        """Fetch current price from Redis cache (populated by WebSocket)."""
+        """Fetch current price from Redis cache (populated by WebSocket).
+
+        Redis stores JSON objects: {"exchange": "binance", "price": 65000.0, "volume": 1.23}
+        Must json.loads() first — never decode as raw float.
+        """
         for exchange in ("binance", "kraken", "bybit"):
             redis_key = f"price:{exchange}:{symbol.upper()}"
-            price_str = await self.redis.get(redis_key)
-            if price_str:
-                try:
-                    return Decimal(price_str.decode('utf-8'))
-                except (ValueError, AttributeError) as e:
-                    logger.error(f"Invalid price format in Redis for {redis_key}: {price_str}")
-                    continue
+            price_bytes = await self.redis.get(redis_key)
+            if price_bytes is None:
+                continue
+            try:
+                data = json.loads(price_bytes.decode("utf-8"))
+                price = data.get("price")
+                if price is not None:
+                    return Decimal(str(price))
+                logger.warning(
+                    "Redis key %s had no 'price' field: %s", redis_key, data
+                )
+            except (json.JSONDecodeError, ValueError, AttributeError) as e:
+                logger.error(
+                    "Failed to parse Redis price for %s: %s — %s",
+                    redis_key, price_bytes, e
+                )
+                continue
+
+        # Try static fallback prices before giving up entirely
+        fallback = self.fallback_prices.get(symbol.upper())
+        if fallback is not None:
+            logger.warning(
+                "Using fallback price for %s: %s (Redis cache empty)", symbol, fallback
+            )
+            return fallback
 
         raise PriceUnavailableError(
             f"Market price for {symbol} is currently unavailable. "
-            "WebSocket may be disconnected."
+            "No valid price found in Redis cache across all exchanges and no fallback "
+            "configured. WebSocket feed may be disconnected."
         )
 
     def _calculate_trade_value(
