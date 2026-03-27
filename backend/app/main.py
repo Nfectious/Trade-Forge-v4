@@ -17,6 +17,7 @@ from app.core.security import limiter, get_security_headers
 from app.core.database import close_db
 from app.core.redis import init_redis, get_redis_client, close_redis
 from app.core.websocket_manager import WebSocketManager
+from app.services.position_monitor import start_position_monitor
 
 # Configure logging
 logging.basicConfig(
@@ -73,6 +74,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"WebSocket manager failed: {e}")
             ws_manager = None
+
+    # Start position monitor (stop-loss / take-profit / trailing-stop / limit fills)
+    asyncio.create_task(start_position_monitor())
+    logger.info("Position monitor task started")
 
     logger.info("Application startup complete")
 

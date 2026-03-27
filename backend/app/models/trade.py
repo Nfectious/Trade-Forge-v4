@@ -4,7 +4,7 @@ Maps to: trading_pairs, orders, trades tables in init.sql
 """
 
 from sqlmodel import SQLModel, Field
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime
 from uuid import UUID, uuid4
 from enum import Enum
@@ -18,6 +18,7 @@ class OrderType(str, Enum):
     MARKET = "market"
     LIMIT = "limit"
     STOP_LOSS = "stop_loss"
+    STOP_LIMIT = "stop_limit"
     TAKE_PROFIT = "take_profit"
 
 
@@ -28,6 +29,7 @@ class OrderSide(str, Enum):
 
 class OrderStatus(str, Enum):
     PENDING = "pending"
+    OPEN = "open"
     FILLED = "filled"
     CANCELLED = "cancelled"
     REJECTED = "rejected"
@@ -70,20 +72,41 @@ class Order(SQLModel, table=True):
     user_id: UUID = Field(foreign_key="users.id")
     trading_pair_id: UUID = Field(foreign_key="trading_pairs.id")
 
-    order_type: str = Field(max_length=20)
+    order_type: str = Field(default="market", max_length=20)
     side: str = Field(max_length=10)
     status: str = Field(default="pending", max_length=20)
 
     quantity: float
-    price: Optional[float] = None
+    price: Optional[float] = None           # execution/display price
     filled_quantity: float = Field(default=0)
     filled_avg_price: Optional[float] = None
 
-    total_cost: Optional[int] = None  # BIGINT (cents)
+    total_cost: Optional[int] = None        # BIGINT (cents)
     fee: int = Field(default=0)
 
+    # Existing risk-management prices (display prices, stored as DECIMAL in DB)
     stop_price: Optional[float] = None
     take_profit_price: Optional[float] = None
+
+    # ---- New columns added by migration 002 ----
+
+    # Trailing-stop distance as a percentage (e.g. 2.5 = 2.5 %)
+    trailing_stop_percent: Optional[float] = Field(default=None)
+
+    # Highest price seen while position is open, in cents (BIGINT)
+    trailing_stop_peak_price: Optional[int] = Field(default=None)
+
+    # Limit trigger price in cents (BIGINT); display price = limit_price / 100
+    limit_price: Optional[int] = Field(default=None)
+
+    # True when the position monitor auto-executed this order
+    auto_executed: bool = Field(default=False)
+
+    # Reason recorded by the monitor on auto-execution
+    auto_execute_reason: Optional[str] = Field(default=None)
+
+    # Expiry timestamp for pending limit orders
+    expires_at: Optional[datetime] = Field(default=None)
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     filled_at: Optional[datetime] = None
@@ -109,33 +132,55 @@ class Trade(SQLModel, table=True):
     total_value: int  # BIGINT (cents)
     fee: int = Field(default=0)
 
-    pnl: Optional[int] = None  # BIGINT (cents)
+    pnl: Optional[int] = None          # BIGINT (cents)
     pnl_percent: Optional[float] = None
 
     executed_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # ============================================================================
-# REQUEST/RESPONSE MODELS (Pydantic, not DB tables)
+# REQUEST / RESPONSE MODELS (Pydantic, not DB tables)
 # ============================================================================
 
 class OrderCreate(SQLModel):
-    """Order placement request"""
+    """Order placement request."""
+
     symbol: str = Field(max_length=20)
-    side: str = Field(max_length=10)  # "buy" or "sell"
+    side: str = Field(max_length=10)        # "buy" or "sell"
     quantity: float = Field(gt=0)
-    price: Optional[float] = None  # None = market order
+
+    order_type: Literal["market", "limit", "stop_limit", "take_profit"] = "market"
+
+    # Required for limit / stop_limit / take_profit orders (display price in $)
+    limit_price: Optional[float] = None
+
+    # Optional risk management (display prices in $); attached to any order
+    stop_loss_price: Optional[float] = None
+    take_profit_price: Optional[float] = None
+
+    # Optional trailing stop expressed as a percentage (0.1 – 50.0)
+    trailing_stop_percent: Optional[float] = None
+
+    # How long a pending limit order stays active before the monitor expires it
+    expires_in_hours: Optional[int] = 24
+
+
+class OrderModifyRequest(SQLModel):
+    """Body for PUT /trading/orders/{order_id} — modify risk-management prices."""
+    stop_loss_price: Optional[float] = None    # display price in $
+    take_profit_price: Optional[float] = None  # display price in $
 
 
 class OrderResponse(SQLModel):
-    """Order placement response"""
+    """Order placement response."""
     success: bool
     message: str
-    trade_id: Optional[str] = None
+    order_id: Optional[str] = None   # always set
+    trade_id: Optional[str] = None   # set only for immediately executed orders
 
 
 class TradeHistoryItem(SQLModel):
-    """Single trade in history response"""
+    """Single trade in history response."""
     id: UUID
     symbol: str
     side: str
