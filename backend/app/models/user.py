@@ -131,12 +131,25 @@ class RefreshToken(SQLModel, table=True):
 
 class EmailVerificationToken(SQLModel, table=True):
     """Email verification tokens"""
-    
+
     __tablename__ = "email_verification_tokens"
-    
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     user_id: UUID = Field(foreign_key="users.id", ondelete="CASCADE")
     token: str = Field(unique=True, max_length=255)
+    expires_at: datetime
+    used: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PasswordResetToken(SQLModel, table=True):
+    """Password reset tokens — stored as SHA-256 hex digests (migration 006)."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", ondelete="CASCADE")
+    token_hash: str = Field(unique=True, max_length=64)  # sha256 hex digest
     expires_at: datetime
     used: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
