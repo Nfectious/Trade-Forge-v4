@@ -18,6 +18,7 @@ from app.core.database import close_db
 from app.core.redis import init_redis, get_redis_client, close_redis
 from app.core.websocket_manager import WebSocketManager
 from app.services.position_monitor import start_position_monitor
+from app.services.contest_scheduler import start_contest_scheduler
 
 # Configure logging
 logging.basicConfig(
@@ -78,6 +79,10 @@ async def lifespan(app: FastAPI):
     # Start position monitor (stop-loss / take-profit / trailing-stop / limit fills)
     asyncio.create_task(start_position_monitor())
     logger.info("Position monitor task started")
+
+    # Contest scheduler (rankings every 5 min, lifecycle every 1 min)
+    asyncio.create_task(start_contest_scheduler())
+    logger.info("Contest scheduler task started")
 
     logger.info("Application startup complete")
 
@@ -196,13 +201,17 @@ async def health_check():
 # API ROUTES
 # ============================================================================
 
-from app.api import auth, users, wallet, trading, admin, market
+from app.api import auth, users, wallet, trading, admin, market, contests
 
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(wallet.router, prefix="/wallet", tags=["Wallet"])
 app.include_router(trading.router, prefix="/trading", tags=["Trading"])
 app.include_router(market.router, prefix="/market", tags=["Market Data"])
+# admin_router uses its own /admin/contests prefix (registered before admin.router
+# so its contest endpoints take precedence over the stubs in admin.py)
+app.include_router(contests.admin_router)
+app.include_router(contests.router, prefix="/contests", tags=["Contests"])
 app.include_router(admin.router)
 
 # ============================================================================
