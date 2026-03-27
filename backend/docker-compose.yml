@@ -12,8 +12,5 @@ services:
       - .env.production          # ← This line is key. Points to root .env.production
     # volumes, restart, etc.
 
-  # If frontend needs env vars (NEXT_PUBLIC_*) too:
-  frontend:
-    ...
-    env_file:
-      - .env.production
+  # frontend is served separately (Next.js dev server or static export)
+  # and does not run as a Docker service in this compose file.

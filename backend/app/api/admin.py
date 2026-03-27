@@ -5,7 +5,7 @@ from sqlmodel import select, func
 from app.core.dependencies import require_admin
 from app.core.database import get_session
 from app.models.user import User, UserResponse
-from app.models.contest import Contest, ContestResponse, ContestCreate
+# Contest management is handled by app.api.contests (admin_router)
 from datetime import datetime
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -57,34 +57,4 @@ async def unban_user(
     await session.commit()
     return {"message": f"User {user.email} unbanned"}
 
-@router.get("/contests", response_model=list[ContestResponse])
-async def list_contests(
-    session: AsyncSession = Depends(get_session),
-    admin: User = Depends(require_admin)
-):
-    """List all contests (admin only)"""
-    result = await session.execute(select(Contest))
-    return result.scalars().all()
-
-@router.post("/contests", response_model=ContestResponse)
-async def create_contest(
-    contest_data: ContestCreate,
-    session: AsyncSession = Depends(get_session),
-    admin: User = Depends(require_admin)
-):
-    """Create a new contest (admin only)"""
-    contest = Contest(
-        name=contest_data.name,
-        description=contest_data.description,
-        type=contest_data.type,
-        start_time=contest_data.start_time,
-        end_time=contest_data.end_time,
-        entry_fee=contest_data.entry_fee,
-        starting_balance=contest_data.starting_balance,
-        max_participants=contest_data.max_participants,
-        created_by=admin.id
-    )
-    session.add(contest)
-    await session.commit()
-    await session.refresh(contest)
-    return contest
+# Contest CRUD is handled by app.api.contests (admin_router at /admin/contests)

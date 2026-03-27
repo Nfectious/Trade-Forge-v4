@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Image from 'next/image'
 import './globals.css'
+import { AuthProvider } from '@/lib/auth'
 
 export const metadata: Metadata = {
   title: 'TradeForge – Crypto Sim Trading',
@@ -23,7 +24,7 @@ export default function RootLayout({
               <span className="text-sm text-crypto-dark-text/60">Paper trade like a pro. Win real contests.</span>
             </nav>
           </header>
-          {children}
+          <AuthProvider>{children}</AuthProvider>
         </div>
       </body>
     </html>
