@@ -201,7 +201,7 @@ async def health_check():
 # API ROUTES
 # ============================================================================
 
-from app.api import auth, users, wallet, trading, admin, market, contests
+from app.api import auth, users, wallet, trading, admin, market, contests, leaderboard
 
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(users.router, prefix="/users", tags=["Users"])
@@ -212,6 +212,7 @@ app.include_router(market.router, prefix="/market", tags=["Market Data"])
 # so its contest endpoints take precedence over the stubs in admin.py)
 app.include_router(contests.admin_router)
 app.include_router(contests.router, prefix="/contests", tags=["Contests"])
+app.include_router(leaderboard.router, prefix="/leaderboard", tags=["Leaderboard"])
 app.include_router(admin.router)
 
 # ============================================================================
