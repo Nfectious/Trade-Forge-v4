@@ -12,7 +12,7 @@ from app.core.database import get_session
 from app.core.dependencies import require_admin
 from app.models.contest import Contest, ContestEntry, ContestResponse
 from app.models.payment import PaymentTransaction
-from app.models.trade import Trade
+from app.models.trade import Trade, TradingPair
 from app.models.user import TierLevel, User, UserProfile, UserResponse
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -366,6 +366,58 @@ async def list_contests(
             "created_at":          c.created_at.isoformat(),
         }
         for c in contests
+    ]
+
+
+# ── Trades: Recent platform-wide feed ────────────────────────────────────────
+
+@router.get("/trades/recent")
+async def recent_trades(
+    limit:  int = Query(50, ge=1, le=200),
+    symbol: Optional[str] = Query(None),
+    side:   Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_session),
+    admin: User = Depends(require_admin),
+):
+    """Most recent platform-wide trades for the admin trade monitor."""
+    q = (
+        select(
+            Trade.id,
+            Trade.user_id,
+            TradingPair.symbol,
+            Trade.side,
+            Trade.quantity,
+            Trade.price,
+            Trade.total_value,
+            Trade.pnl,
+            Trade.executed_at,
+            User.email.label("user_email"),
+        )
+        .join(TradingPair, TradingPair.id == Trade.trading_pair_id)
+        .join(User, User.id == Trade.user_id)
+    )
+    if symbol:
+        q = q.where(TradingPair.symbol == symbol.upper())
+    if side:
+        q = q.where(Trade.side == side.lower())
+    q = q.order_by(Trade.executed_at.desc()).limit(limit)
+
+    result = await session.execute(q)
+    rows = result.mappings().all()
+    return [
+        {
+            "id":                str(row["id"]),
+            "user_id":           str(row["user_id"]),
+            "user_email":        row["user_email"],
+            "symbol":            row["symbol"],
+            "side":              row["side"],
+            "quantity":          row["quantity"],
+            "price":             row["price"],
+            "total_value_dollars": (row["total_value"] or 0) / 100,
+            "pnl_dollars":       (row["pnl"] or 0) / 100 if row["pnl"] is not None else None,
+            "executed_at":       row["executed_at"].isoformat() if row["executed_at"] else None,
+        }
+        for row in rows
     ]
 
 

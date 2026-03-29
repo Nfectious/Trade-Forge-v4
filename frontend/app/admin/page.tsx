@@ -1,185 +1,204 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import api from '@/lib/api';
+import { useState, useEffect } from 'react';
+import { useAuth } from '@/lib/auth';
+import {
+  LayoutDashboard,
+  Users,
+  Trophy,
+  Activity,
+  Server,
+  Mail,
+  RefreshCw,
+  ShieldOff,
+  Menu,
+  X,
+} from 'lucide-react';
 
-interface User {
-  id: string;
-  email: string;
-  role: string;
-  status: string;
-  tier: string;
+// ─── Tab type ─────────────────────────────────────────────────────────────────
+
+type AdminTab = 'overview' | 'users' | 'contests' | 'trades' | 'health' | 'logs';
+
+interface NavItem {
+  id: AdminTab;
+  label: string;
+  icon: React.ReactNode;
 }
 
-interface Contest {
-  id: string;
-  name: string;
-  description?: string;
-  start_time: string;
-  end_time: string;
-  entry_fee: number;
-  status: string;
-  current_participants: number;
-  max_participants?: number;
+const NAV: NavItem[] = [
+  { id: 'overview',  label: 'Dashboard Overview',  icon: <LayoutDashboard size={18} /> },
+  { id: 'users',     label: 'User Management',      icon: <Users      size={18} /> },
+  { id: 'contests',  label: 'Contest Management',   icon: <Trophy     size={18} /> },
+  { id: 'trades',    label: 'Trade Monitor',        icon: <Activity   size={18} /> },
+  { id: 'health',    label: 'System Health',        icon: <Server     size={18} /> },
+  { id: 'logs',      label: 'Email Logs',           icon: <Mail       size={18} /> },
+];
+
+// ─── Inner sidebar ────────────────────────────────────────────────────────────
+
+function AdminSidebar({
+  active,
+  setActive,
+  collapsed,
+  setCollapsed,
+}: {
+  active: AdminTab;
+  setActive: (t: AdminTab) => void;
+  collapsed: boolean;
+  setCollapsed: (v: boolean) => void;
+}) {
+  return (
+    <aside
+      className="flex flex-col flex-shrink-0 transition-all duration-200"
+      style={{
+        width: collapsed ? 56 : 220,
+        background: 'var(--bg-secondary)',
+        borderRight: '1px solid var(--border-subtle)',
+        minHeight: 0,
+      }}
+    >
+      {/* Collapse toggle */}
+      <div
+        className="flex items-center justify-between px-3 py-3 flex-shrink-0"
+        style={{ borderBottom: '1px solid var(--border-subtle)' }}
+      >
+        {!collapsed && (
+          <span
+            className="text-xs font-semibold uppercase tracking-widest"
+            style={{ color: 'var(--text-muted)', fontFamily: 'Space Grotesk' }}
+          >
+            Admin
+          </span>
+        )}
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="ml-auto p-1 rounded transition-colors hover:opacity-70"
+          style={{ color: 'var(--text-muted)' }}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <Menu size={16} /> : <X size={16} />}
+        </button>
+      </div>
+
+      {/* Nav items */}
+      <nav className="flex flex-col gap-0.5 p-2 flex-1 overflow-y-auto">
+        {NAV.map((item) => {
+          const isActive = active === item.id;
+          return (
+            <button
+              key={item.id}
+              onClick={() => setActive(item.id)}
+              title={collapsed ? item.label : undefined}
+              className="flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-all text-left"
+              style={{
+                background: isActive ? 'rgba(59,130,246,0.12)' : 'transparent',
+                color: isActive ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                border: isActive
+                  ? '1px solid rgba(59,130,246,0.25)'
+                  : '1px solid transparent',
+                justifyContent: collapsed ? 'center' : 'flex-start',
+              }}
+            >
+              <span className="flex-shrink-0">{item.icon}</span>
+              {!collapsed && <span className="truncate">{item.label}</span>}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Footer label */}
+      {!collapsed && (
+        <div
+          className="px-3 py-3 text-xs flex-shrink-0"
+          style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}
+        >
+          Trade Forge Admin
+        </div>
+      )}
+    </aside>
+  );
 }
 
-export default function AdminPanel() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [users, setUsers] = useState<User[]>([]);
-  const [contests, setContests] = useState<Contest[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [authChecked, setAuthChecked] = useState(false);
+// ─── Loading / access-denied screens ─────────────────────────────────────────
 
-  // Check auth on mount
+function Spinner() {
+  return (
+    <div className="flex items-center justify-center flex-1 min-h-0">
+      <RefreshCw
+        size={28}
+        className="animate-spin"
+        style={{ color: 'var(--accent-blue)' }}
+      />
+    </div>
+  );
+}
+
+function AccessDenied() {
+  return (
+    <div className="flex flex-col items-center justify-center flex-1 gap-4">
+      <ShieldOff size={48} style={{ color: 'var(--accent-red)' }} />
+      <div className="text-center">
+        <h2
+          className="text-xl font-bold"
+          style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}
+        >
+          Access Denied
+        </h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
+          Admin privileges required.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab content placeholders (replaced in later sections) ───────────────────
+
+function OverviewTab()      { return <div id="tab-overview"  className="p-6" />; }
+function UsersTab()         { return <div id="tab-users"     className="p-6" />; }
+function ContestsTab()      { return <div id="tab-contests"  className="p-6" />; }
+function TradeMonitorTab()  { return <div id="tab-trades"    className="p-6" />; }
+function SystemHealthTab()  { return <div id="tab-health"    className="p-6" />; }
+function EmailLogsTab()     { return <div id="tab-logs"      className="p-6" />; }
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+export default function AdminPage() {
+  const { user, loading: authLoading } = useAuth();
+  const [activeTab, setActiveTab]       = useState<AdminTab>('overview');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Collapse sidebar by default on narrow viewports
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const token = localStorage.getItem('access_token');
-        if (!token) {
-          setAuthChecked(true);
-          setLoading(false);
-          return;
-        }
-        const response = await api.get('/auth/me');
-        setCurrentUser(response.data);
-      } catch {
-        setCurrentUser(null);
-      } finally {
-        setAuthChecked(true);
-      }
-    };
-    checkAuth();
+    const mq = window.matchMedia('(max-width: 768px)');
+    if (mq.matches) setSidebarCollapsed(true);
+    const handler = (e: MediaQueryListEvent) => setSidebarCollapsed(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
   }, []);
 
-  // Load admin data when user is confirmed admin
-  useEffect(() => {
-    if (authChecked && currentUser?.role === 'admin') {
-      loadData();
-    } else if (authChecked) {
-      setLoading(false);
-    }
-  }, [authChecked, currentUser]);
-
-  const loadData = async () => {
-    try {
-      const [usersRes, contestsRes] = await Promise.all([
-        api.get('/admin/users'),
-        api.get('/admin/contests')
-      ]);
-      setUsers(usersRes.data);
-      setContests(contestsRes.data);
-    } catch (error) {
-      console.error('Failed to load admin data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleBanToggle = async (userId: string, currentStatus: string) => {
-    try {
-      const endpoint = currentStatus === 'banned' ? 'unban' : 'ban';
-      await api.patch(`/admin/users/${userId}/${endpoint}`);
-      await loadData();
-    } catch (error) {
-      console.error('Failed to toggle ban status:', error);
-      alert('Failed to update user status');
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <p className="text-lg">Loading...</p>
-      </div>
-    );
-  }
-
-  if (!currentUser || currentUser.role !== 'admin') {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <p className="text-lg text-red-500">Access denied. Admin privileges required.</p>
-      </div>
-    );
-  }
+  if (authLoading) return <Spinner />;
+  if (!user || user.role !== 'admin') return <AccessDenied />;
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6">Admin Panel</h1>
+    <div className="flex min-h-0 flex-1 overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+      {/* Inner admin sidebar */}
+      <AdminSidebar
+        active={activeTab}
+        setActive={setActiveTab}
+        collapsed={sidebarCollapsed}
+        setCollapsed={setSidebarCollapsed}
+      />
 
-      <div className="grid md:grid-cols-2 gap-6">
-        {/* Users Section */}
-        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-          <h2 className="text-xl font-semibold mb-4">Users Management</h2>
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {users.length === 0 ? (
-              <p className="text-gray-400">No users found</p>
-            ) : (
-              users.map((u) => (
-                <div
-                  key={u.id}
-                  className="flex justify-between items-center p-3 bg-gray-900 rounded hover:bg-gray-800 transition"
-                >
-                  <div className="flex-1">
-                    <p className="font-medium">{u.email}</p>
-                    <p className="text-sm text-gray-400">
-                      Status: <span className={u.status === 'banned' ? 'text-red-500' : 'text-green-500'}>
-                        {u.status}
-                      </span> | Role: {u.role} | Tier: {u.tier}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleBanToggle(u.id, u.status)}
-                    className={`px-4 py-2 rounded font-medium transition ${
-                      u.status === 'banned'
-                        ? 'bg-green-600 hover:bg-green-700 text-white'
-                        : 'bg-red-600 hover:bg-red-700 text-white'
-                    }`}
-                  >
-                    {u.status === 'banned' ? 'Unban' : 'Ban'}
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Contests Section */}
-        <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-          <h2 className="text-xl font-semibold mb-4">Contests Management</h2>
-          <div className="space-y-3 max-h-96 overflow-y-auto">
-            {contests.length === 0 ? (
-              <p className="text-gray-400">No contests found</p>
-            ) : (
-              contests.map((c) => (
-                <div key={c.id} className="p-4 bg-gray-900 rounded hover:bg-gray-800 transition">
-                  <h3 className="font-semibold text-lg">{c.name}</h3>
-                  {c.description && (
-                    <p className="text-sm text-gray-400 mb-2">{c.description}</p>
-                  )}
-                  <div className="text-sm space-y-1">
-                    <p>
-                      <span className="font-medium">Dates:</span>{' '}
-                      {new Date(c.start_time).toLocaleDateString()} →{' '}
-                      {new Date(c.end_time).toLocaleDateString()}
-                    </p>
-                    <p>
-                      <span className="font-medium">Entry Fee:</span> ${c.entry_fee.toFixed(2)}
-                    </p>
-                    <p>
-                      <span className="font-medium">Status:</span>{' '}
-                      <span className="capitalize">{c.status}</span>
-                    </p>
-                    <p>
-                      <span className="font-medium">Participants:</span> {c.current_participants}
-                      {c.max_participants && ` / ${c.max_participants}`}
-                    </p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
+      {/* Tab content area */}
+      <main className="flex-1 min-h-0 overflow-y-auto">
+        {activeTab === 'overview'  && <OverviewTab />}
+        {activeTab === 'users'     && <UsersTab />}
+        {activeTab === 'contests'  && <ContestsTab />}
+        {activeTab === 'trades'    && <TradeMonitorTab />}
+        {activeTab === 'health'    && <SystemHealthTab />}
+        {activeTab === 'logs'      && <EmailLogsTab />}
+      </main>
     </div>
   );
 }
