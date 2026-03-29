@@ -848,8 +848,601 @@ function UsersTab() {
     </div>
   );
 }
-function ContestsTab()      { return <div id="tab-contests"  className="p-6" />; }
-function TradeMonitorTab()  { return <div id="tab-trades"    className="p-6" />; }
+// ─── Contest Management tab ───────────────────────────────────────────────────
+
+interface AdminContest {
+  id: string; name: string; description: string | null;
+  type: string; status: string; entry_fee: number;
+  prize_pool_dollars: number; max_participants: number | null;
+  current_participants: number; start_time: string; end_time: string;
+  starting_balance: number; prize_distributed: boolean;
+}
+
+const STATUS_BADGE: Record<string, { bg: string; color: string }> = {
+  upcoming:  { bg: 'rgba(59,130,246,0.12)',  color: 'var(--accent-blue)'   },
+  active:    { bg: 'rgba(34,197,94,0.12)',   color: 'var(--accent-green)'  },
+  completed: { bg: 'rgba(71,85,105,0.2)',    color: 'var(--text-muted)'    },
+  cancelled: { bg: 'rgba(239,68,68,0.12)',   color: 'var(--accent-red)'    },
+};
+
+function Countdown({ end }: { end: string }) {
+  const [label, setLabel] = useState('');
+  useEffect(() => {
+    function calc() {
+      const diff = new Date(end).getTime() - Date.now();
+      if (diff <= 0) { setLabel('Ended'); return; }
+      const d = Math.floor(diff / 86_400_000);
+      const h = Math.floor((diff % 86_400_000) / 3_600_000);
+      const m = Math.floor((diff % 3_600_000) / 60_000);
+      setLabel(d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`);
+    }
+    calc();
+    const id = setInterval(calc, 60_000);
+    return () => clearInterval(id);
+  }, [end]);
+  return <span>{label}</span>;
+}
+
+const EMPTY_CONTEST_FORM = {
+  name: '', description: '', type: 'free', visibility: 'public',
+  entry_fee: 0, prize_pool_dollars: 0, starting_balance_dollars: 100_000,
+  max_participants: '', min_participants: 2,
+  start_time: '', end_time: '', registration_deadline: '',
+  allowed_assets: '', max_trades_per_day: '',
+  platform_commission_percent: 10,
+};
+
+function ContestsTab() {
+  const { addToast } = useToast();
+  const [contests,   setContests]   = useState<AdminContest[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [confirm,    setConfirm]    = useState<{ type: 'cancel' | 'force_end'; contest: AdminContest } | null>(null);
+  const [actioning,  setActioning]  = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [form,       setForm]       = useState({ ...EMPTY_CONTEST_FORM });
+  const [creating,   setCreating]   = useState(false);
+
+  const fetchContests = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = statusFilter ? `?status=${statusFilter}` : '';
+      const res = await api.get(`/admin/contests${params}`);
+      setContests(res.data ?? []);
+    } catch {
+      addToast('Failed to load contests', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter, addToast]);
+
+  useEffect(() => { fetchContests(); }, [fetchContests]);
+
+  async function executeAction() {
+    if (!confirm) return;
+    setActioning(true);
+    try {
+      const { type, contest } = confirm;
+      if (type === 'cancel') {
+        await api.post(`/admin/contests/${contest.id}/cancel`);
+        addToast(`"${contest.name}" cancelled — refunds queued`, 'success');
+      } else {
+        await api.post(`/admin/contests/${contest.id}/force-end`);
+        addToast(`"${contest.name}" force-closed and prizes distributed`, 'success');
+      }
+      setConfirm(null);
+      await fetchContests();
+    } catch (e: any) {
+      addToast(e?.response?.data?.detail ?? 'Action failed', 'error');
+    } finally {
+      setActioning(false);
+    }
+  }
+
+  async function createContest(e: React.FormEvent) {
+    e.preventDefault();
+    setCreating(true);
+    try {
+      await api.post('/admin/contests', {
+        name:          form.name,
+        description:   form.description || null,
+        type:          form.type,
+        visibility:    form.visibility,
+        entry_fee:     Number(form.entry_fee),
+        prize_pool:    Math.round(Number(form.prize_pool_dollars) * 100),
+        starting_balance: Math.round(Number(form.starting_balance_dollars) * 100),
+        max_participants:  form.max_participants ? Number(form.max_participants) : null,
+        min_participants:  Number(form.min_participants),
+        start_time:    form.start_time,
+        end_time:      form.end_time,
+        registration_deadline: form.registration_deadline || null,
+        allowed_assets: form.allowed_assets || null,
+        max_trades_per_day: form.max_trades_per_day ? Number(form.max_trades_per_day) : null,
+        platform_commission_percent: Number(form.platform_commission_percent),
+      });
+      addToast(`Contest "${form.name}" created`, 'success');
+      setShowCreate(false);
+      setForm({ ...EMPTY_CONTEST_FORM });
+      await fetchContests();
+    } catch (e: any) {
+      addToast(e?.response?.data?.detail ?? 'Failed to create contest', 'error');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function fld(k: keyof typeof form, v: string | number) {
+    setForm(f => ({ ...f, [k]: v }));
+  }
+
+  return (
+    <div className="p-6 space-y-4 max-w-7xl">
+
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h1 className="text-xl font-bold" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+          Contest Management
+        </h1>
+        <div className="flex gap-2 items-center">
+          <select
+            value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            className="px-3 py-1.5 rounded-lg text-sm"
+            style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+          >
+            <option value="">All Statuses</option>
+            <option value="upcoming">Upcoming</option>
+            <option value="active">Active</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-85"
+            style={{ background: 'var(--accent-blue)', color: '#fff' }}
+          >
+            + New Contest
+          </button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="tf-card overflow-hidden">
+        {loading ? (
+          <SkeletonRows rows={6} cols={7} />
+        ) : contests.length === 0 ? (
+          <div className="px-5 py-12 text-center">
+            <Trophy size={32} className="mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No contests match the current filter</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  {['Contest', 'Entry Fee', 'Participants', 'Prize Pool', 'Time Left', 'Status', 'Actions'].map(h => (
+                    <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {contests.map(c => {
+                  const badge = STATUS_BADGE[c.status] ?? STATUS_BADGE.completed;
+                  const canAct = c.status === 'active' || c.status === 'upcoming';
+                  return (
+                    <tr key={c.id} className="hover:bg-white/[0.02] transition-colors" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      <td className="px-3 py-3">
+                        <p className="font-medium" style={{ color: 'var(--text-primary)' }}>{c.name}</p>
+                        <p className="text-xs capitalize" style={{ color: 'var(--text-muted)' }}>{c.type}</p>
+                      </td>
+                      <td className="px-3 py-3 mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        {c.entry_fee === 0 ? 'Free' : `$${c.entry_fee.toFixed(2)}`}
+                      </td>
+                      <td className="px-3 py-3 mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        {c.current_participants}{c.max_participants ? `/${c.max_participants}` : ''}
+                      </td>
+                      <td className="px-3 py-3 mono text-xs" style={{ color: c.prize_pool_dollars > 0 ? 'var(--accent-gold)' : 'var(--text-muted)' }}>
+                        {c.prize_pool_dollars > 0 ? `$${c.prize_pool_dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                      </td>
+                      <td className="px-3 py-3 text-xs mono" style={{ color: 'var(--text-secondary)' }}>
+                        {c.status === 'active' ? <Countdown end={c.end_time} /> : c.status === 'upcoming' ? <Countdown end={c.start_time} /> : '—'}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium capitalize" style={{ background: badge.bg, color: badge.color }}>
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-1">
+                          <a
+                            href={`/contests/${c.id}`} target="_blank" rel="noreferrer"
+                            className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                            style={{ background: 'rgba(59,130,246,0.1)', color: 'var(--accent-blue)' }}
+                          >
+                            Board
+                          </a>
+                          {canAct && (
+                            <>
+                              <button
+                                onClick={() => setConfirm({ type: 'force_end', contest: c })}
+                                className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                                style={{ background: 'rgba(245,158,11,0.1)', color: 'var(--accent-gold)' }}
+                              >
+                                Force End
+                              </button>
+                              <button
+                                onClick={() => setConfirm({ type: 'cancel', contest: c })}
+                                className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                                style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--accent-red)' }}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Action confirm dialogs ── */}
+      {confirm?.type === 'cancel' && (
+        <ConfirmDialog danger
+          title="Cancel Contest + Refund"
+          message={`Cancel "${confirm.contest.name}"? All ${confirm.contest.current_participants} participants will be refunded.`}
+          confirmLabel="Cancel & Refund" loading={actioning}
+          onConfirm={executeAction} onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm?.type === 'force_end' && (
+        <ConfirmDialog
+          title="Force Close Contest"
+          message={`Immediately finalize "${confirm.contest.name}" and distribute prizes to the current leader?`}
+          confirmLabel="Force Close" loading={actioning}
+          onConfirm={executeAction} onCancel={() => setConfirm(null)}
+        />
+      )}
+
+      {/* ── Create contest modal ── */}
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => !creating && setShowCreate(false)} />
+          <div
+            className="relative z-10 w-full max-w-2xl mx-4 rounded-xl shadow-2xl overflow-y-auto"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border-bright)', maxHeight: '90vh' }}
+          >
+            <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              <h3 className="text-base font-semibold" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+                Create New Contest
+              </h3>
+              <button onClick={() => setShowCreate(false)} style={{ color: 'var(--text-muted)' }} className="hover:opacity-70">
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={createContest} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                {/* Name */}
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Contest Name *</label>
+                  <input required value={form.name} onChange={e => fld('name', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                    placeholder="Weekly Champions"
+                  />
+                </div>
+                {/* Description */}
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Description</label>
+                  <textarea value={form.description} onChange={e => fld('description', e.target.value)} rows={2}
+                    className="w-full px-3 py-2 rounded-lg text-sm resize-none"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  />
+                </div>
+                {/* Type */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Type *</label>
+                  <select value={form.type} onChange={e => fld('type', e.target.value)} required
+                    className="w-full px-3 py-2 rounded-lg text-sm"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  >
+                    <option value="free">Free</option>
+                    <option value="paid">Paid</option>
+                    <option value="sponsored">Sponsored</option>
+                  </select>
+                </div>
+                {/* Visibility */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Visibility</label>
+                  <select value={form.visibility} onChange={e => fld('visibility', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  >
+                    <option value="public">Public</option>
+                    <option value="private">Private</option>
+                  </select>
+                </div>
+                {/* Entry Fee */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Entry Fee ($)</label>
+                  <input type="number" min="0" step="0.01" value={form.entry_fee} onChange={e => fld('entry_fee', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm mono"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  />
+                </div>
+                {/* Prize Pool */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Prize Pool ($)</label>
+                  <input type="number" min="0" step="0.01" value={form.prize_pool_dollars} onChange={e => fld('prize_pool_dollars', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm mono"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  />
+                </div>
+                {/* Starting Balance */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Starting Balance ($)</label>
+                  <input type="number" min="100" step="1000" value={form.starting_balance_dollars} onChange={e => fld('starting_balance_dollars', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm mono"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  />
+                </div>
+                {/* Commission */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Platform Commission (%)</label>
+                  <input type="number" min="0" max="100" step="0.5" value={form.platform_commission_percent} onChange={e => fld('platform_commission_percent', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm mono"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  />
+                </div>
+                {/* Max / Min participants */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Max Participants (blank = unlimited)</label>
+                  <input type="number" min="2" value={form.max_participants} onChange={e => fld('max_participants', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm mono"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                    placeholder="Unlimited"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Min Participants</label>
+                  <input type="number" min="2" value={form.min_participants} onChange={e => fld('min_participants', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm mono"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                  />
+                </div>
+                {/* Dates */}
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Start Time *</label>
+                  <input required type="datetime-local" value={form.start_time} onChange={e => fld('start_time', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', colorScheme: 'dark' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>End Time *</label>
+                  <input required type="datetime-local" value={form.end_time} onChange={e => fld('end_time', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', colorScheme: 'dark' }}
+                  />
+                </div>
+                {/* Allowed assets */}
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Allowed Assets (comma-separated, blank = all)</label>
+                  <input value={form.allowed_assets} onChange={e => fld('allowed_assets', e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg text-sm mono"
+                    style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+                    placeholder="BTCUSDT,ETHUSDT,SOLUSDT"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => setShowCreate(false)}
+                  className="flex-1 py-2.5 rounded-lg text-sm font-medium"
+                  style={{ background: 'var(--bg-card-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+                >
+                  Cancel
+                </button>
+                <button type="submit" disabled={creating}
+                  className="flex-1 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+                  style={{ background: 'var(--accent-blue)', color: '#fff' }}
+                >
+                  {creating && <RefreshCw size={13} className="animate-spin" />}
+                  Create Contest
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Trade Monitor tab ────────────────────────────────────────────────────────
+
+interface PlatformTrade {
+  id: string; user_email: string; symbol: string;
+  side: string; quantity: number; price: number;
+  total_value_dollars: number; pnl_dollars: number | null;
+  executed_at: string;
+}
+
+function TradeMonitorTab() {
+  const { addToast } = useToast();
+  const [trades,      setTrades]      = useState<PlatformTrade[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [symbolFilter, setSymbolFilter] = useState('');
+  const [sideFilter,  setSideFilter]  = useState('');
+  const [userFilter,  setUserFilter]  = useState('');
+  const [lastUpdate,  setLastUpdate]  = useState<Date | null>(null);
+
+  const fetchTrades = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ limit: '50' });
+      if (symbolFilter) params.set('symbol', symbolFilter);
+      if (sideFilter)   params.set('side',   sideFilter);
+      const res = await api.get(`/admin/trades/recent?${params}`);
+      setTrades(res.data ?? []);
+      setLastUpdate(new Date());
+    } catch {
+      addToast('Failed to fetch trades', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [symbolFilter, sideFilter, addToast]);
+
+  // Initial + 10s poll
+  useEffect(() => {
+    fetchTrades();
+    const id = setInterval(fetchTrades, 10_000);
+    return () => clearInterval(id);
+  }, [fetchTrades]);
+
+  // Client-side user filter (no roundtrip needed)
+  const visible = userFilter.trim()
+    ? trades.filter(t => t.user_email.toLowerCase().includes(userFilter.toLowerCase()))
+    : trades;
+
+  return (
+    <div className="p-6 space-y-4 max-w-7xl">
+
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-xl font-bold" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+            Trade Monitor
+          </h1>
+          {lastUpdate && (
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              Last updated {lastUpdate.toLocaleTimeString()} · auto-refreshes every 10s
+            </p>
+          )}
+        </div>
+        <button
+          onClick={fetchTrades}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-opacity hover:opacity-70"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+        >
+          <RefreshCw size={13} /> Refresh
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2">
+        <input
+          type="text" placeholder="Filter by user email…"
+          value={userFilter} onChange={e => setUserFilter(e.target.value)}
+          className="px-3 py-2 rounded-lg text-sm flex-1 min-w-[160px]"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+        />
+        <input
+          type="text" placeholder="Symbol (e.g. BTCUSDT)…"
+          value={symbolFilter}
+          onChange={e => { setSymbolFilter(e.target.value.toUpperCase()); }}
+          className="px-3 py-2 rounded-lg text-sm w-44 mono uppercase"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+        />
+        <select
+          value={sideFilter} onChange={e => setSideFilter(e.target.value)}
+          className="px-3 py-2 rounded-lg text-sm"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+        >
+          <option value="">All Sides</option>
+          <option value="buy">Buy</option>
+          <option value="sell">Sell</option>
+        </select>
+      </div>
+
+      {/* Table */}
+      <div className="tf-card overflow-hidden">
+        {loading ? (
+          <SkeletonRows rows={10} cols={7} />
+        ) : visible.length === 0 ? (
+          <div className="px-5 py-12 text-center">
+            <Activity size={32} className="mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No trades match the current filters</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  {['Time', 'User', 'Symbol', 'Side', 'Quantity', 'Price', 'Total', 'P&L'].map(h => (
+                    <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map(t => {
+                  const isBuy = t.side === 'buy';
+                  const rowBg = isBuy ? 'rgba(34,197,94,0.03)' : 'rgba(239,68,68,0.03)';
+                  return (
+                    <tr
+                      key={t.id}
+                      className="hover:brightness-125 transition-all"
+                      style={{ borderBottom: '1px solid var(--border-subtle)', background: rowBg }}
+                    >
+                      <td className="px-3 py-2.5 text-xs mono" style={{ color: 'var(--text-muted)' }}>
+                        {new Date(t.executed_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        <span className="truncate block max-w-[120px]">{t.user_email}</span>
+                      </td>
+                      <td className="px-3 py-2.5 font-semibold mono text-xs" style={{ color: 'var(--text-primary)' }}>
+                        {t.symbol}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span
+                          className="px-2 py-0.5 rounded text-xs font-semibold uppercase"
+                          style={{
+                            background: isBuy ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+                            color: isBuy ? 'var(--accent-green)' : 'var(--accent-red)',
+                          }}
+                        >
+                          {t.side}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        {t.quantity}
+                      </td>
+                      <td className="px-3 py-2.5 mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        ${t.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-3 py-2.5 mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        ${t.total_value_dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-3 py-2.5 mono text-xs font-medium"
+                        style={{ color: t.pnl_dollars == null ? 'var(--text-muted)' : t.pnl_dollars >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}
+                      >
+                        {t.pnl_dollars == null ? '—' : `${t.pnl_dollars >= 0 ? '+' : ''}$${Math.abs(t.pnl_dollars).toFixed(2)}`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!loading && visible.length > 0 && (
+          <div className="px-4 py-2.5" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Showing {visible.length} most recent trade{visible.length !== 1 ? 's' : ''} · updates every 10s
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 function SystemHealthTab()  { return <div id="tab-health"    className="p-6" />; }
 function EmailLogsTab()     { return <div id="tab-logs"      className="p-6" />; }
 
