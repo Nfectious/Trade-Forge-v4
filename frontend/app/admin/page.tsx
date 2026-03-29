@@ -28,6 +28,7 @@ import {
   Zap,
   UserCheck,
   Clock,
+  Search,
 } from 'lucide-react';
 
 // ─── Tab type ─────────────────────────────────────────────────────────────────
@@ -162,6 +163,48 @@ function AccessDenied() {
         <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
           Admin privileges required.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared confirm dialog ────────────────────────────────────────────────────
+
+function ConfirmDialog({
+  title, message, confirmLabel = 'Confirm', danger = false,
+  onConfirm, onCancel, loading = false,
+}: {
+  title: string; message: string; confirmLabel?: string; danger?: boolean;
+  onConfirm: () => void; onCancel: () => void; loading?: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={!loading ? onCancel : undefined} />
+      <div
+        className="relative z-10 w-full max-w-sm mx-4 rounded-xl p-6 shadow-2xl"
+        style={{ background: 'var(--bg-card)', border: '1px solid var(--border-bright)' }}
+      >
+        <h3 className="text-base font-semibold mb-2" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+          {title}
+        </h3>
+        <p className="text-sm mb-6" style={{ color: 'var(--text-secondary)' }}>{message}</p>
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel} disabled={loading}
+            className="flex-1 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+            style={{ background: 'var(--bg-card-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm} disabled={loading}
+            className="flex-1 py-2 rounded-lg text-sm font-semibold transition-opacity hover:opacity-85 disabled:opacity-50 flex items-center justify-center gap-2"
+            style={{ background: danger ? 'var(--accent-red)' : 'var(--accent-blue)', color: '#fff' }}
+          >
+            {loading && <RefreshCw size={13} className="animate-spin" />}
+            {confirmLabel}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -397,7 +440,414 @@ function OverviewTab() {
     </div>
   );
 }
-function UsersTab()         { return <div id="tab-users"     className="p-6" />; }
+// ─── Users tab ───────────────────────────────────────────────────────────────
+
+interface AdminUser {
+  id: string; email: string; nickname: string | null;
+  role: string; status: string; tier: string;
+  created_at: string; last_login: string | null; total_trades: number;
+}
+
+const TIERS   = ['free', 'pro', 'elite', 'valkyrie'] as const;
+const TIER_COLORS: Record<string, string> = {
+  free: 'var(--text-muted)', pro: 'var(--accent-blue)',
+  elite: 'var(--accent-violet)', valkyrie: 'var(--accent-gold)',
+};
+const STATUS_COLORS: Record<string, string> = {
+  active: 'var(--accent-green)', banned: 'var(--accent-red)',
+  suspended: 'var(--accent-gold)', pending_verification: 'var(--text-muted)',
+};
+
+function UsersTab() {
+  const { addToast } = useToast();
+  const [users,        setUsers]        = useState<AdminUser[]>([]);
+  const [total,        setTotal]        = useState(0);
+  const [page,         setPage]         = useState(1);
+  const [search,       setSearch]       = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [tierFilter,   setTierFilter]   = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [loading,      setLoading]      = useState(true);
+  const [selected,     setSelected]     = useState<Set<string>>(new Set());
+
+  // Action state
+  type ActionType = 'ban' | 'unban' | 'tier' | 'reset_pw' | 'email_blast';
+  const [confirm, setConfirm] = useState<{ type: ActionType; user?: AdminUser } | null>(null);
+  const [newTier,  setNewTier]  = useState('');
+  const [actioning, setActioning] = useState(false);
+
+  const PER_PAGE = 25;
+
+  // Debounce search
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Reset page when filters change
+  useEffect(() => { setPage(1); }, [tierFilter, statusFilter]);
+
+  const fetchUsers = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: String(PER_PAGE) });
+      if (debouncedSearch) params.set('search', debouncedSearch);
+      if (tierFilter)      params.set('tier',   tierFilter);
+      if (statusFilter)    params.set('status', statusFilter);
+      const res = await api.get(`/admin/users?${params}`);
+      setUsers(res.data.users ?? []);
+      setTotal(res.data.total ?? 0);
+    } catch {
+      addToast('Failed to load users', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [page, debouncedSearch, tierFilter, statusFilter, addToast]);
+
+  useEffect(() => { fetchUsers(); }, [fetchUsers]);
+
+  // ── actions ──
+  async function executeAction() {
+    if (!confirm) return;
+    setActioning(true);
+    try {
+      const { type, user } = confirm;
+      if (type === 'ban' && user) {
+        await api.patch(`/admin/users/${user.id}/ban`);
+        addToast(`${user.email} suspended`, 'success');
+      } else if (type === 'unban' && user) {
+        await api.patch(`/admin/users/${user.id}/unban`);
+        addToast(`${user.email} reactivated`, 'success');
+      } else if (type === 'tier' && user && newTier) {
+        await api.put(`/admin/users/${user.id}/tier`, { tier: newTier });
+        addToast(`${user.email} tier → ${newTier}`, 'success');
+      } else if (type === 'reset_pw' && user) {
+        await api.post('/auth/forgot-password', { email: user.email });
+        addToast(`Password reset email sent to ${user.email}`, 'success');
+      } else if (type === 'email_blast') {
+        // POST to endpoint; gracefully handles if not yet implemented
+        try {
+          await api.post('/admin/email-blast', { user_ids: Array.from(selected) });
+          addToast('Email blast queued', 'success');
+        } catch (e: any) {
+          if (e?.response?.status === 404) addToast('Email blast endpoint not configured', 'error');
+          else throw e;
+        }
+      }
+      setConfirm(null);
+      await fetchUsers();
+    } catch (e: any) {
+      addToast(e?.response?.data?.detail ?? 'Action failed', 'error');
+    } finally {
+      setActioning(false);
+    }
+  }
+
+  // ── CSV export ──
+  function exportCSV() {
+    const headers = ['Email', 'Nickname', 'Tier', 'Status', 'Role', 'Joined', 'Trades'];
+    const rows = (selected.size ? users.filter(u => selected.has(u.id)) : users).map(u => [
+      u.email, u.nickname ?? '', u.tier, u.status, u.role,
+      new Date(u.created_at).toLocaleDateString(), u.total_trades,
+    ]);
+    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const url  = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const a    = Object.assign(document.createElement('a'), { href: url, download: 'users.csv' });
+    a.click(); URL.revokeObjectURL(url);
+    addToast('CSV exported', 'success');
+  }
+
+  // ── select helpers ──
+  function toggleSelect(id: string) {
+    setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
+  }
+  function toggleAll() {
+    setSelected(prev => prev.size === users.length ? new Set() : new Set(users.map(u => u.id)));
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+
+  return (
+    <div className="p-6 space-y-4 max-w-7xl">
+
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-bold" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+          User Management
+          {total > 0 && <span className="ml-2 text-sm font-normal" style={{ color: 'var(--text-muted)' }}>({total.toLocaleString()} total)</span>}
+        </h1>
+        <div className="flex gap-2">
+          <button
+            onClick={exportCSV}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-opacity hover:opacity-80"
+            style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+          >
+            <Activity size={13} /> Export CSV {selected.size > 0 && `(${selected.size})`}
+          </button>
+          <button
+            onClick={() => { if (selected.size === 0) { addToast('Select users first', 'warning'); return; } setConfirm({ type: 'email_blast' }); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-opacity hover:opacity-80"
+            style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+          >
+            <Mail size={13} /> Email Blast {selected.size > 0 && `(${selected.size})`}
+          </button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-2">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
+          <input
+            type="text" placeholder="Search by email or username…"
+            value={search} onChange={e => setSearch(e.target.value)}
+            className="w-full pl-8 pr-3 py-2 rounded-lg text-sm"
+            style={{ background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+          />
+        </div>
+        <select
+          value={tierFilter} onChange={e => setTierFilter(e.target.value)}
+          className="px-3 py-2 rounded-lg text-sm"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+        >
+          <option value="">All Tiers</option>
+          {TIERS.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+        </select>
+        <select
+          value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          className="px-3 py-2 rounded-lg text-sm"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+        >
+          <option value="">All Statuses</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+          <option value="banned">Banned</option>
+          <option value="pending_verification">Pending</option>
+        </select>
+      </div>
+
+      {/* Table */}
+      <div className="tf-card overflow-hidden">
+        {loading ? (
+          <SkeletonRows rows={8} cols={7} />
+        ) : users.length === 0 ? (
+          <div className="px-5 py-12 text-center">
+            <Users size={32} className="mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No users match the current filters</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <th className="px-3 py-3 text-left w-8">
+                    <input
+                      type="checkbox"
+                      checked={selected.size === users.length && users.length > 0}
+                      onChange={toggleAll}
+                      className="rounded"
+                      style={{ accentColor: 'var(--accent-blue)' }}
+                    />
+                  </th>
+                  {['User', 'Tier', 'Status', 'Joined', 'Trades', 'Actions'].map(h => (
+                    <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(u => (
+                  <tr
+                    key={u.id}
+                    className="hover:bg-white/[0.02] transition-colors"
+                    style={{ borderBottom: '1px solid var(--border-subtle)', background: selected.has(u.id) ? 'rgba(59,130,246,0.04)' : undefined }}
+                  >
+                    <td className="px-3 py-3">
+                      <input
+                        type="checkbox" checked={selected.has(u.id)} onChange={() => toggleSelect(u.id)}
+                        className="rounded" style={{ accentColor: 'var(--accent-blue)' }}
+                      />
+                    </td>
+                    <td className="px-3 py-3">
+                      <p className="font-medium" style={{ color: 'var(--text-primary)' }}>{u.nickname ?? '—'}</p>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{u.email}</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="text-xs font-semibold uppercase" style={{ color: TIER_COLORS[u.tier] ?? 'var(--text-muted)' }}>
+                        {u.tier}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span
+                        className="px-2 py-0.5 rounded-full text-xs font-medium"
+                        style={{
+                          background: `${STATUS_COLORS[u.status] ?? 'var(--text-muted)'}18`,
+                          color: STATUS_COLORS[u.status] ?? 'var(--text-muted)',
+                        }}
+                      >
+                        {u.status.replace('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-xs mono" style={{ color: 'var(--text-secondary)' }}>
+                      {new Date(u.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="px-3 py-3 mono text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {u.total_trades}
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-1">
+                        {/* Change Tier */}
+                        <button
+                          onClick={() => { setNewTier(u.tier); setConfirm({ type: 'tier', user: u }); }}
+                          className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                          style={{ background: 'rgba(59,130,246,0.1)', color: 'var(--accent-blue)' }}
+                        >
+                          Tier
+                        </button>
+                        {/* Ban / Unban */}
+                        {u.status === 'banned' || u.status === 'suspended' ? (
+                          <button
+                            onClick={() => setConfirm({ type: 'unban', user: u })}
+                            className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                            style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--accent-green)' }}
+                          >
+                            Restore
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setConfirm({ type: 'ban', user: u })}
+                            className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                            style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--accent-red)' }}
+                          >
+                            Suspend
+                          </button>
+                        )}
+                        {/* Reset PW */}
+                        <button
+                          onClick={() => setConfirm({ type: 'reset_pw', user: u })}
+                          className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                          style={{ background: 'rgba(245,158,11,0.1)', color: 'var(--accent-gold)' }}
+                        >
+                          Reset PW
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {!loading && total > PER_PAGE && (
+          <div
+            className="flex items-center justify-between px-4 py-3"
+            style={{ borderTop: '1px solid var(--border-subtle)' }}
+          >
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Showing {((page - 1) * PER_PAGE) + 1}–{Math.min(page * PER_PAGE, total)} of {total.toLocaleString()}
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-40 transition-opacity hover:opacity-70"
+                style={{ background: 'var(--bg-card-hover)', color: 'var(--text-secondary)' }}
+              >
+                ← Prev
+              </button>
+              <span className="px-3 py-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+                {page} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-40 transition-opacity hover:opacity-70"
+                style={{ background: 'var(--bg-card-hover)', color: 'var(--text-secondary)' }}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Confirm dialogs ── */}
+      {confirm?.type === 'ban' && confirm.user && (
+        <ConfirmDialog
+          danger title="Suspend Account"
+          message={`Suspend ${confirm.user.email}? They will lose access immediately.`}
+          confirmLabel="Suspend" loading={actioning}
+          onConfirm={executeAction} onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm?.type === 'unban' && confirm.user && (
+        <ConfirmDialog
+          title="Restore Account"
+          message={`Restore access for ${confirm.user.email}?`}
+          confirmLabel="Restore" loading={actioning}
+          onConfirm={executeAction} onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm?.type === 'reset_pw' && confirm.user && (
+        <ConfirmDialog
+          title="Reset Password"
+          message={`Send a password reset email to ${confirm.user.email}?`}
+          confirmLabel="Send Reset Email" loading={actioning}
+          onConfirm={executeAction} onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm?.type === 'email_blast' && (
+        <ConfirmDialog
+          title="Send Email Blast"
+          message={`Send a bulk email to ${selected.size} selected user${selected.size !== 1 ? 's' : ''}?`}
+          confirmLabel="Send" loading={actioning}
+          onConfirm={executeAction} onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm?.type === 'tier' && confirm.user && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setConfirm(null)} />
+          <div
+            className="relative z-10 w-full max-w-sm mx-4 rounded-xl p-6 shadow-2xl"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border-bright)' }}
+          >
+            <h3 className="text-base font-semibold mb-1" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+              Change Subscription Tier
+            </h3>
+            <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>{confirm.user.email}</p>
+            <select
+              value={newTier} onChange={e => setNewTier(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm mb-5"
+              style={{ background: 'var(--bg-card-hover)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }}
+            >
+              {TIERS.map(t => (
+                <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
+              ))}
+            </select>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirm(null)}
+                className="flex-1 py-2 rounded-lg text-sm font-medium"
+                style={{ background: 'var(--bg-card-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={executeAction} disabled={actioning}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+                style={{ background: 'var(--accent-blue)', color: '#fff' }}
+              >
+                {actioning && <RefreshCw size={13} className="animate-spin" />}
+                Update Tier
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function ContestsTab()      { return <div id="tab-contests"  className="p-6" />; }
 function TradeMonitorTab()  { return <div id="tab-trades"    className="p-6" />; }
 function SystemHealthTab()  { return <div id="tab-health"    className="p-6" />; }
