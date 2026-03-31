@@ -421,6 +421,123 @@ async def recent_trades(
     ]
 
 
+# ── Admin: Detailed health check ─────────────────────────────────────────────
+
+@router.get("/health")
+async def admin_health(
+    session: AsyncSession = Depends(get_session),
+    admin: User = Depends(require_admin),
+):
+    """Comprehensive platform health snapshot for the admin dashboard."""
+    import json as _json
+    import os
+    import time
+
+    from app.core.redis import get_redis_client
+
+    result: dict = {}
+
+    # ── Database ──────────────────────────────────────────────────────────────
+    db_start = time.monotonic()
+    try:
+        await session.execute(text("SELECT 1"))
+        result["database"] = {
+            "status": "up",
+            "latency_ms": round((time.monotonic() - db_start) * 1000, 1),
+        }
+    except Exception as exc:
+        result["database"] = {"status": "down", "error": str(exc)}
+
+    # ── Redis ─────────────────────────────────────────────────────────────────
+    redis = get_redis_client()
+    if redis:
+        try:
+            r_start = time.monotonic()
+            await redis.ping()
+            info = await redis.info("memory")
+            result["redis"] = {
+                "status": "up",
+                "latency_ms": round((time.monotonic() - r_start) * 1000, 1),
+                "used_memory_mb": round(info.get("used_memory", 0) / 1_048_576, 1),
+                "peak_memory_mb": round(info.get("used_memory_peak", 0) / 1_048_576, 1),
+            }
+        except Exception as exc:
+            result["redis"] = {"status": "down", "error": str(exc)}
+    else:
+        result["redis"] = {"status": "down", "error": "client not initialised"}
+
+    # ── Price feed ────────────────────────────────────────────────────────────
+    if redis:
+        try:
+            symbols_live, latest_ts = 0, None
+            for exchange in ("binance", "bybit", "kraken"):
+                for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"):
+                    raw = await redis.get(f"price:{exchange}:{sym}")
+                    if not raw:
+                        continue
+                    symbols_live += 1
+                    try:
+                        parsed = _json.loads(raw)
+                        ts = parsed.get("timestamp") or parsed.get("ts")
+                        if ts and (latest_ts is None or str(ts) > str(latest_ts)):
+                            latest_ts = ts
+                    except Exception:
+                        pass
+            stale = True
+            if latest_ts:
+                try:
+                    age_s = (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(str(latest_ts).replace("Z", "+00:00"))
+                    ).total_seconds()
+                    stale = age_s > 60
+                except Exception:
+                    pass
+            result["price_feed"] = {
+                "status": "stale" if stale else "live",
+                "symbols_live": symbols_live,
+                "last_update": latest_ts,
+            }
+        except Exception as exc:
+            result["price_feed"] = {"status": "unknown", "error": str(exc)}
+    else:
+        result["price_feed"] = {"status": "unknown"}
+
+    # ── Scheduler heartbeat (stored by scheduler in Redis) ────────────────────
+    scheduler_info: dict = {"status": "unknown"}
+    if redis:
+        try:
+            hb = await redis.get("scheduler:heartbeat")
+            if hb:
+                hb_data = _json.loads(hb)
+                last_ran = hb_data.get("last_ran")
+                age_s = 0
+                if last_ran:
+                    age_s = (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(str(last_ran).replace("Z", "+00:00"))
+                    ).total_seconds()
+                scheduler_info = {
+                    "status": "running" if age_s < 120 else "stale",
+                    "last_ran": last_ran,
+                    "next_run": hb_data.get("next_run"),
+                    "age_seconds": round(age_s),
+                }
+            else:
+                scheduler_info = {"status": "no_heartbeat"}
+        except Exception as exc:
+            scheduler_info = {"status": "unknown", "error": str(exc)}
+    result["scheduler"] = scheduler_info
+
+    # ── Server ────────────────────────────────────────────────────────────────
+    result["server"] = {
+        "pid": os.getpid(),
+        "uptime_seconds": round(time.monotonic()),
+    }
+
+    return result
+
+
 # ── Admin Logs ─────────────────────────────────────────────────────────────────
 
 @router.get("/logs")

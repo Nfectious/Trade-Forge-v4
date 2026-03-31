@@ -29,6 +29,8 @@ import {
   UserCheck,
   Clock,
   Search,
+  Database,
+  Wifi,
 } from 'lucide-react';
 
 // ─── Tab type ─────────────────────────────────────────────────────────────────
@@ -1443,8 +1445,421 @@ function TradeMonitorTab() {
     </div>
   );
 }
-function SystemHealthTab()  { return <div id="tab-health"    className="p-6" />; }
-function EmailLogsTab()     { return <div id="tab-logs"      className="p-6" />; }
+// ─── System Health tab ───────────────────────────────────────────────────────
+
+type ServiceStatus = 'up' | 'down' | 'stale' | 'live' | 'running' | 'no_heartbeat' | 'unknown' | 'degraded';
+
+interface HealthData {
+  database:   { status: ServiceStatus; latency_ms?: number; error?: string };
+  redis:      { status: ServiceStatus; latency_ms?: number; used_memory_mb?: number; peak_memory_mb?: number; error?: string };
+  price_feed: { status: ServiceStatus; symbols_live?: number; last_update?: string; error?: string };
+  scheduler:  { status: ServiceStatus; last_ran?: string; next_run?: string; age_seconds?: number; error?: string };
+  server:     { pid?: number; uptime_seconds?: number };
+}
+
+function statusColor(s: ServiceStatus | undefined): string {
+  if (!s) return 'var(--text-muted)';
+  if (s === 'up' || s === 'live' || s === 'running') return 'var(--accent-green)';
+  if (s === 'stale' || s === 'no_heartbeat' || s === 'degraded') return 'var(--accent-gold)';
+  return 'var(--accent-red)';
+}
+
+function statusBg(s: ServiceStatus | undefined): string {
+  if (!s) return 'rgba(71,85,105,0.15)';
+  if (s === 'up' || s === 'live' || s === 'running') return 'rgba(34,197,94,0.08)';
+  if (s === 'stale' || s === 'no_heartbeat' || s === 'degraded') return 'rgba(245,158,11,0.08)';
+  return 'rgba(239,68,68,0.08)';
+}
+
+function uptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return d > 0 ? `${d}d ${h}h ${m}m` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function HealthCard({
+  title, status, icon, children,
+}: {
+  title: string; status: ServiceStatus | undefined; icon: React.ReactNode; children: React.ReactNode;
+}) {
+  const color = statusColor(status);
+  const bg    = statusBg(status);
+  return (
+    <div
+      className="rounded-xl p-5 space-y-3"
+      style={{ background: 'var(--bg-card)', border: `1px solid ${color}33` }}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span style={{ color }}>{icon}</span>
+          <span className="text-sm font-semibold" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>{title}</span>
+        </div>
+        <span
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold capitalize"
+          style={{ background: bg, color }}
+        >
+          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: color }} />
+          {status ?? 'unknown'}
+        </span>
+      </div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+function HealthRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span className="mono font-medium" style={{ color: 'var(--text-secondary)' }}>{value}</span>
+    </div>
+  );
+}
+
+function SystemHealthTab() {
+  const { addToast }  = useToast();
+  const [health, setHealth]       = useState<HealthData | null>(null);
+  const [loading, setLoading]     = useState(true);
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
+
+  const fetchHealth = useCallback(async () => {
+    try {
+      const res = await api.get('/admin/health');
+      setHealth(res.data);
+      setLastChecked(new Date());
+    } catch {
+      addToast('Failed to fetch health data', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [addToast]);
+
+  useEffect(() => {
+    fetchHealth();
+    const id = setInterval(fetchHealth, 15_000);
+    return () => clearInterval(id);
+  }, [fetchHealth]);
+
+  const d  = health?.database;
+  const r  = health?.redis;
+  const pf = health?.price_feed;
+  const sc = health?.scheduler;
+  const sv = health?.server;
+
+  return (
+    <div className="p-6 space-y-5 max-w-4xl">
+
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+            System Health
+          </h1>
+          {lastChecked && (
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              Last checked {lastChecked.toLocaleTimeString()} · auto-refreshes every 15s
+            </p>
+          )}
+        </div>
+        <button
+          onClick={fetchHealth}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-opacity hover:opacity-70"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+        >
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="grid sm:grid-cols-2 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="skeleton h-32 rounded-xl" />
+          ))}
+        </div>
+      ) : (
+        <div className="grid sm:grid-cols-2 gap-4">
+
+          {/* Database */}
+          <HealthCard title="Database" status={d?.status} icon={<Database size={16} />}>
+            <HealthRow label="Response time" value={d?.latency_ms != null ? `${d.latency_ms} ms` : '—'} />
+            <HealthRow label="Driver" value="asyncpg (PostgreSQL)" />
+            {d?.error && <p className="text-xs" style={{ color: 'var(--accent-red)' }}>{d.error}</p>}
+          </HealthCard>
+
+          {/* Redis */}
+          <HealthCard title="Redis" status={r?.status} icon={<Server size={16} />}>
+            <HealthRow label="Latency" value={r?.latency_ms != null ? `${r.latency_ms} ms` : '—'} />
+            <HealthRow label="Memory used" value={r?.used_memory_mb != null ? `${r.used_memory_mb} MB` : '—'} />
+            <HealthRow label="Memory peak" value={r?.peak_memory_mb != null ? `${r.peak_memory_mb} MB` : '—'} />
+            {r?.error && <p className="text-xs" style={{ color: 'var(--accent-red)' }}>{r.error}</p>}
+          </HealthCard>
+
+          {/* Price Feed */}
+          <HealthCard title="Price Feed" status={pf?.status} icon={<Activity size={16} />}>
+            <HealthRow label="Symbols tracked" value={pf?.symbols_live ?? '—'} />
+            <HealthRow label="Last update" value={
+              pf?.last_update
+                ? new Date(pf.last_update).toLocaleTimeString()
+                : '—'
+            } />
+            {pf?.error && <p className="text-xs" style={{ color: 'var(--accent-red)' }}>{pf.error}</p>}
+          </HealthCard>
+
+          {/* Scheduler */}
+          <HealthCard title="Scheduler" status={sc?.status} icon={<Clock size={16} />}>
+            <HealthRow label="Last ran" value={
+              sc?.last_ran ? new Date(sc.last_ran).toLocaleTimeString() : '—'
+            } />
+            <HealthRow label="Next run" value={
+              sc?.next_run ? new Date(sc.next_run).toLocaleTimeString() : '—'
+            } />
+            <HealthRow label="Heartbeat age" value={
+              sc?.age_seconds != null ? `${sc.age_seconds}s ago` : '—'
+            } />
+            {sc?.error && <p className="text-xs" style={{ color: 'var(--accent-red)' }}>{sc.error}</p>}
+          </HealthCard>
+
+          {/* Server */}
+          <HealthCard title="Server" status="up" icon={<Zap size={16} />}>
+            <HealthRow label="Uptime" value={sv?.uptime_seconds != null ? uptime(sv.uptime_seconds) : '—'} />
+            <HealthRow label="PID" value={sv?.pid ?? '—'} />
+            <HealthRow label="Runtime" value="FastAPI / Uvicorn" />
+          </HealthCard>
+
+          {/* WebSocket */}
+          <HealthCard title="WebSocket" status="up" icon={<Wifi size={16} />}>
+            <HealthRow label="Price feed" value="ws://…/market/ws/prices" />
+            <HealthRow label="Feed status" value={pf?.status === 'live' ? 'Streaming' : 'Stale'} />
+            <HealthRow label="Symbols active" value={pf?.symbols_live ?? 0} />
+          </HealthCard>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Email / Audit Logs tab ───────────────────────────────────────────────────
+
+interface AuditLog {
+  id: string; action: string; admin_email: string;
+  target_email: string | null; details: Record<string, any> | null;
+  created_at: string;
+}
+
+const ACTION_COLORS: Record<string, { bg: string; color: string }> = {
+  ban_user:        { bg: 'rgba(239,68,68,0.12)',   color: 'var(--accent-red)'    },
+  suspend_user:    { bg: 'rgba(239,68,68,0.12)',   color: 'var(--accent-red)'    },
+  unsuspend_user:  { bg: 'rgba(34,197,94,0.12)',   color: 'var(--accent-green)'  },
+  change_tier:     { bg: 'rgba(59,130,246,0.12)',  color: 'var(--accent-blue)'   },
+  grant_currency:  { bg: 'rgba(245,158,11,0.12)',  color: 'var(--accent-gold)'   },
+  deduct_currency: { bg: 'rgba(239,68,68,0.12)',   color: 'var(--accent-red)'    },
+  contest_adjustment: { bg: 'rgba(139,92,246,0.12)', color: 'var(--accent-violet)' },
+  delete_user:     { bg: 'rgba(239,68,68,0.15)',   color: 'var(--accent-red)'    },
+  feature_toggle:  { bg: 'rgba(71,85,105,0.2)',    color: 'var(--text-secondary)' },
+  grant_achievement: { bg: 'rgba(245,158,11,0.12)', color: 'var(--accent-gold)'  },
+};
+
+const LOG_ACTIONS = [
+  'ban_user', 'suspend_user', 'unsuspend_user', 'change_tier',
+  'grant_currency', 'deduct_currency', 'contest_adjustment',
+  'delete_user', 'feature_toggle', 'grant_achievement',
+];
+
+function EmailLogsTab() {
+  const { addToast }    = useToast();
+  const [logs,    setLogs]    = useState<AuditLog[]>([]);
+  const [total,   setTotal]   = useState(0);
+  const [page,    setPage]    = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [actionFilter, setActionFilter] = useState('');
+  const [retryTarget,  setRetryTarget]  = useState<AuditLog | null>(null);
+  const [retrying,     setRetrying]     = useState(false);
+
+  const PER_PAGE = 25;
+
+  const fetchLogs = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get(`/admin/logs?page=${page}&limit=${PER_PAGE}`);
+      const all: AuditLog[] = res.data?.logs ?? [];
+      const filtered = actionFilter ? all.filter(l => l.action === actionFilter) : all;
+      setLogs(filtered);
+      setTotal(res.data?.total ?? 0);
+    } catch {
+      addToast('Failed to load audit logs', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [page, actionFilter, addToast]);
+
+  useEffect(() => { fetchLogs(); }, [fetchLogs]);
+  useEffect(() => { setPage(1); }, [actionFilter]);
+
+  async function retryAction() {
+    if (!retryTarget) return;
+    setRetrying(true);
+    try {
+      // Re-apply the same action if it was a ban/tier change
+      if (retryTarget.action === 'ban_user' && retryTarget.target_email) {
+        const userRes = await api.get(`/admin/users?search=${encodeURIComponent(retryTarget.target_email)}&limit=1`);
+        const uid = userRes.data?.users?.[0]?.id;
+        if (uid) {
+          await api.patch(`/admin/users/${uid}/ban`);
+          addToast('Action re-applied successfully', 'success');
+        } else {
+          addToast('Target user not found', 'error');
+        }
+      } else {
+        addToast('Retry not supported for this action type', 'warning');
+      }
+    } catch (e: any) {
+      addToast(e?.response?.data?.detail ?? 'Retry failed', 'error');
+    } finally {
+      setRetrying(false);
+      setRetryTarget(null);
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+
+  return (
+    <div className="p-6 space-y-4 max-w-6xl">
+
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-xl font-bold" style={{ fontFamily: 'Space Grotesk', color: 'var(--text-primary)' }}>
+            Audit Log
+          </h1>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            All admin actions performed on this platform
+          </p>
+        </div>
+        <select
+          value={actionFilter} onChange={e => setActionFilter(e.target.value)}
+          className="px-3 py-1.5 rounded-lg text-sm"
+          style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}
+        >
+          <option value="">All Actions</option>
+          {LOG_ACTIONS.map(a => (
+            <option key={a} value={a}>{a.replace(/_/g, ' ')}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="tf-card overflow-hidden">
+        {loading ? (
+          <SkeletonRows rows={8} cols={5} />
+        ) : logs.length === 0 ? (
+          <div className="px-5 py-12 text-center">
+            <Mail size={32} className="mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
+            <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>No audit log entries yet</p>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+              Admin actions will appear here as they are performed
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  {['Time', 'Admin', 'Action', 'Target', 'Details', ''].map(h => (
+                    <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map(log => {
+                  const badge = ACTION_COLORS[log.action] ?? { bg: 'rgba(71,85,105,0.2)', color: 'var(--text-secondary)' };
+                  return (
+                    <tr
+                      key={log.id}
+                      className="hover:bg-white/[0.02] transition-colors"
+                      style={{ borderBottom: '1px solid var(--border-subtle)' }}
+                    >
+                      <td className="px-3 py-3 text-xs mono" style={{ color: 'var(--text-muted)' }}>
+                        {new Date(log.created_at).toLocaleString(undefined, {
+                          month: 'short', day: 'numeric',
+                          hour: '2-digit', minute: '2-digit',
+                        })}
+                      </td>
+                      <td className="px-3 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        {log.admin_email}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span
+                          className="px-2 py-0.5 rounded-full text-xs font-medium"
+                          style={{ background: badge.bg, color: badge.color }}
+                        >
+                          {log.action.replace(/_/g, ' ')}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        {log.target_email ?? <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      </td>
+                      <td className="px-3 py-3 text-xs mono max-w-[200px] truncate" style={{ color: 'var(--text-muted)' }}>
+                        {log.details ? JSON.stringify(log.details) : '—'}
+                      </td>
+                      <td className="px-3 py-3">
+                        <button
+                          onClick={() => setRetryTarget(log)}
+                          className="px-2 py-1 rounded text-xs font-medium transition-opacity hover:opacity-80"
+                          style={{ background: 'rgba(59,130,246,0.1)', color: 'var(--accent-blue)' }}
+                        >
+                          Retry
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {!loading && total > PER_PAGE && (
+          <div
+            className="flex items-center justify-between px-4 py-3"
+            style={{ borderTop: '1px solid var(--border-subtle)' }}
+          >
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              Page {page} of {totalPages} · {total.toLocaleString()} entries
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-40 transition-opacity hover:opacity-70"
+                style={{ background: 'var(--bg-card-hover)', color: 'var(--text-secondary)' }}
+              >
+                ← Prev
+              </button>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-40 transition-opacity hover:opacity-70"
+                style={{ background: 'var(--bg-card-hover)', color: 'var(--text-secondary)' }}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Retry confirm */}
+      {retryTarget && (
+        <ConfirmDialog
+          title="Retry Admin Action"
+          message={`Re-apply "${retryTarget.action.replace(/_/g, ' ')}" on ${retryTarget.target_email ?? 'target'}?`}
+          confirmLabel="Retry" loading={retrying}
+          onConfirm={retryAction} onCancel={() => setRetryTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
