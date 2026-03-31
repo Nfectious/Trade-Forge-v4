@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/lib/toast';
 import api from '@/lib/api';
@@ -40,7 +40,7 @@ type AdminTab = 'overview' | 'users' | 'contests' | 'trades' | 'health' | 'logs'
 interface NavItem {
   id: AdminTab;
   label: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
 }
 
 const NAV: NavItem[] = [
@@ -288,7 +288,7 @@ function OverviewTab() {
     if (activityRes.status === 'fulfilled') {
       setActivity((activityRes.value.data as ActivityPoint[]).map(r => ({
         ...r,
-        hour: new Date(r.hour).toLocaleTimeString('en-US', { month: 'short', day: 'numeric', hour: '2-digit' }),
+        hour: new Date(r.hour).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit' }),
       })));
     }
     if (logsRes.status     === 'fulfilled') setLogs(logsRes.value.data?.logs ?? []);
@@ -1481,7 +1481,7 @@ function uptime(seconds: number): string {
 function HealthCard({
   title, status, icon, children,
 }: {
-  title: string; status: ServiceStatus | undefined; icon: React.ReactNode; children: React.ReactNode;
+  title: string; status: ServiceStatus | undefined; icon: ReactNode; children: ReactNode;
 }) {
   const color = statusColor(status);
   const bg    = statusBg(status);
@@ -1508,7 +1508,7 @@ function HealthCard({
   );
 }
 
-function HealthRow({ label, value }: { label: string; value: React.ReactNode }) {
+function HealthRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center justify-between text-xs">
       <span style={{ color: 'var(--text-muted)' }}>{label}</span>
