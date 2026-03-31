@@ -111,7 +111,7 @@ async def get_portfolio(
 # ============================================================================
 
 @router.post("/order", response_model=OrderResponse)
-@limiter.limit("30/minute")
+@limiter.limit("60/minute")
 async def place_order(
     request: Request,
     order: OrderCreate,

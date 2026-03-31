@@ -21,6 +21,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import settings
 from app.core.database import get_session
 from app.core.dependencies import get_current_user
+from app.core.redis import get_redis_client
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -269,6 +270,51 @@ async def resend_verification(
 # LOGIN
 # ============================================================================
 
+_LOCKOUT_SECONDS = 15 * 60   # 15 minutes
+_MAX_FAILURES    = 5
+
+
+async def _check_lockout(email: str) -> None:
+    """Raise 429 if the account is currently locked out."""
+    redis = get_redis_client()
+    if not redis:
+        return
+    lockout_key = f"login_lockout:{email}"
+    locked = await redis.get(lockout_key)
+    if locked:
+        remaining = await redis.ttl(lockout_key)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Account temporarily locked due to too many failed login attempts. "
+                   f"Try again in {remaining} seconds.",
+            headers={"Retry-After": str(max(remaining, 0))},
+        )
+
+
+async def _record_failure(email: str) -> None:
+    """Increment failure counter; lock account after MAX_FAILURES."""
+    redis = get_redis_client()
+    if not redis:
+        return
+    fail_key    = f"login_fails:{email}"
+    lockout_key = f"login_lockout:{email}"
+    fails = await redis.incr(fail_key)
+    await redis.expire(fail_key, _LOCKOUT_SECONDS)
+    if fails >= _MAX_FAILURES:
+        await redis.set(lockout_key, "1", ex=_LOCKOUT_SECONDS)
+        await redis.delete(fail_key)
+        logger.warning("Account locked after %d failed login attempts: %s", _MAX_FAILURES, email)
+
+
+async def _clear_failures(email: str) -> None:
+    """Clear failure counter on successful login."""
+    redis = get_redis_client()
+    if not redis:
+        return
+    await redis.delete(f"login_fails:{email}")
+    await redis.delete(f"login_lockout:{email}")
+
+
 @router.post("/login", response_model=TokenResponse)
 @rate_limit_auth
 async def login(
@@ -278,10 +324,13 @@ async def login(
     session: AsyncSession = Depends(get_session),
 ):
     """Login with email and password. Returns access token; sets refresh cookie."""
+    await _check_lockout(credentials.email)
+
     result = await session.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(credentials.password, user.password_hash):
+        await _record_failure(credentials.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -293,6 +342,8 @@ async def login(
     if user.status == "suspended":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is suspended")
 
+    await _clear_failures(credentials.email)
+    logger.info("User logged in: %s", user.email)
     user.last_login = datetime.now(UTC)
     await session.commit()
 

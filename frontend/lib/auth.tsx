@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { api } from './api';
+import { api, setAccessToken, tryRefreshToken } from './api';
 
 interface User {
   id: string;
@@ -17,7 +17,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
@@ -29,19 +29,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshUser = async () => {
     try {
-      const token = localStorage.getItem('access_token');
-      if (!token) {
-        setUser(null);
-        return;
+      // No in-memory token → try to restore one via the httpOnly refresh cookie.
+      // This handles page refreshes where the memory token has been cleared.
+      const { getStoredAccessToken } = await import('./api');
+      if (!getStoredAccessToken()) {
+        const restored = await tryRefreshToken();
+        if (!restored) {
+          setUser(null);
+          return;
+        }
       }
-
       const response = await api.get('/auth/me');
       setUser(response.data);
-    } catch (error) {
-      console.error('Failed to fetch user:', error);
+    } catch {
       setUser(null);
-      localStorage.removeItem('access_token');
-      // refresh_token is in httpOnly cookie, not in localStorage
+      setAccessToken(null);
     }
   };
 
@@ -51,18 +53,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string) => {
     const response = await api.post('/auth/login', { email, password });
-
     const { access_token } = response.data;
-    localStorage.setItem('access_token', access_token);
-    // refresh_token is set by backend as httpOnly cookie, not stored in JS
-
+    // Store in memory only — never localStorage
+    setAccessToken(access_token);
     await refreshUser();
   };
 
-  const logout = () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    setUser(null);
+  const logout = async () => {
+    try {
+      // Tell server to revoke refresh token and clear the httpOnly cookie
+      await api.post('/auth/logout');
+    } catch {
+      // Best-effort
+    } finally {
+      setAccessToken(null);
+      setUser(null);
+    }
   };
 
   return (

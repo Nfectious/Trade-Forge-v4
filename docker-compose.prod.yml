@@ -103,8 +103,15 @@ services:
       - SMTP_PASSWORD=${SMTP_PASSWORD:-}
       - SMTP_FROM=${SMTP_FROM:-}
       - FRONTEND_URL=${FRONTEND_URL}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - ENVIRONMENT=production
       - DEBUG=false
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      - STRIPE_PRICE_ID_PRO=${STRIPE_PRICE_ID_PRO:-}
+      - STRIPE_PRICE_ID_ELITE=${STRIPE_PRICE_ID_ELITE:-}
+      - STRIPE_PRICE_ID_VALKYRIE=${STRIPE_PRICE_ID_VALKYRIE:-}
       - KRAKEN_API_KEY=${KRAKEN_API_KEY:-}
       - KRAKEN_API_SECRET=${KRAKEN_API_SECRET:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
@@ -172,6 +179,34 @@ services:
         reservations:
           memory: 256m
           cpus: "0.25"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:alpine
+    container_name: crypto_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - /var/www/certbot:/var/www/certbot:ro
+      - /var/log/nginx:/var/log/nginx
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - crypto_network
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     logging:
       driver: json-file
       options:

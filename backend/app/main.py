@@ -12,9 +12,11 @@ from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 import logging
 
+from sqlalchemy import text
+
 from app.core.config import settings
 from app.core.security import limiter, get_security_headers
-from app.core.database import close_db
+from app.core.database import close_db, get_session
 from app.core.redis import init_redis, get_redis_client, close_redis
 from app.core.websocket_manager import WebSocketManager
 from app.services.position_monitor import start_position_monitor
@@ -40,6 +42,34 @@ ws_manager = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ws_manager
+
+    # ==================== STARTUP VALIDATION ====================
+    missing: list[str] = []
+    if not settings.DATABASE_URL:
+        missing.append("DATABASE_URL")
+    if not settings.REDIS_URL:
+        missing.append("REDIS_URL")
+    try:
+        _ = settings.jwt_secret
+    except ValueError:
+        missing.append("JWT_SECRET or JWT_SECRET_KEY")
+    if missing:
+        logger.critical("FATAL: Missing required environment variables: %s", missing)
+        raise RuntimeError(f"Required environment variables not set: {', '.join(missing)}")
+
+    # Warn about PLACEHOLDER values (left over from .env.example copy)
+    for var, val in [("DATABASE_URL", settings.DATABASE_URL), ("REDIS_URL", settings.REDIS_URL)]:
+        if val and "CHANGE_ME" in val:
+            logger.critical("FATAL: %s still contains placeholder 'CHANGE_ME' — update .env.production", var)
+            raise RuntimeError(f"{var} contains placeholder value — update .env.production before starting")
+
+    # Stripe warnings (non-fatal — payments are optional)
+    if not settings.stripe_secret_key:
+        logger.warning("STRIPE_SECRET_KEY not configured — payment features disabled")
+    elif settings.stripe_secret_key.startswith("sk_test_"):
+        logger.warning("STRIPE_SECRET_KEY is a test key — switch to live key in production")
+    if not settings.STRIPE_WEBHOOK_SECRET:
+        logger.warning("STRIPE_WEBHOOK_SECRET not configured — webhook verification disabled")
 
     logger.info("Starting Crypto Platform API")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
@@ -189,13 +219,34 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "services": {
-            "redis": "up" if get_redis_client() else "down",
-            "websocket_feeds": "up" if ws_manager and ws_manager.running else "down"
-        }
-    }
+    # Database liveness check
+    db_status = "down"
+    try:
+        async for session in get_session():
+            await session.execute(text("SELECT 1"))
+            db_status = "up"
+            break
+    except Exception:
+        pass
+
+    redis_status = "up" if get_redis_client() else "down"
+    ws_status = "up" if ws_manager and ws_manager.running else "down"
+
+    all_up = db_status == "up" and redis_status == "up"
+    overall = "healthy" if all_up else "degraded"
+    http_code = 200 if all_up else 503
+
+    return JSONResponse(
+        status_code=http_code,
+        content={
+            "status": overall,
+            "services": {
+                "database": db_status,
+                "redis": redis_status,
+                "websocket_feeds": ws_status,
+            },
+        },
+    )
 
 # ============================================================================
 # API ROUTES
