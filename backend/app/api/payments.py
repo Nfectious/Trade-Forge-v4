@@ -60,7 +60,7 @@ _PAID_TIERS = {"pro", "elite", "valkyrie"}
 
 def _require_stripe() -> None:
     """Raise 503 if Stripe is not configured."""
-    if not settings.STRIPE_RESTRICTED_KEY:
+    if not settings.stripe_secret_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Payment processing is not configured",

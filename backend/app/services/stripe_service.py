@@ -27,7 +27,8 @@ from app.models.payment import StripeCustomer
 logger = logging.getLogger(__name__)
 
 # Set the API key once at import time; remains None if not configured.
-stripe.api_key = settings.STRIPE_RESTRICTED_KEY
+# Supports both STRIPE_SECRET_KEY (preferred) and STRIPE_RESTRICTED_KEY (legacy).
+stripe.api_key = settings.stripe_secret_key
 
 # ---------------------------------------------------------------------------
 # TIER → PRICE ID MAPPING

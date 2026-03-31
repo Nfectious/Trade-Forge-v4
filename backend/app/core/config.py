@@ -67,12 +67,19 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str | None = None
     SMTP_FROM: str | None = None
 
-    # Stripe Payments (Optional - use restricted key for security)
-    STRIPE_RESTRICTED_KEY: str | None = None
+    # Stripe Payments — supports both STRIPE_SECRET_KEY and legacy STRIPE_RESTRICTED_KEY
+    STRIPE_SECRET_KEY: str | None = None       # preferred name
+    STRIPE_RESTRICTED_KEY: str | None = None   # legacy alias
+    STRIPE_PUBLISHABLE_KEY: str | None = None
     STRIPE_WEBHOOK_SECRET: str | None = None
     STRIPE_PRICE_ID_PRO: str | None = None
     STRIPE_PRICE_ID_ELITE: str | None = None
     STRIPE_PRICE_ID_VALKYRIE: str | None = None
+
+    @property
+    def stripe_secret_key(self) -> str | None:
+        """Return Stripe secret/restricted key, preferring STRIPE_SECRET_KEY."""
+        return self.STRIPE_SECRET_KEY or self.STRIPE_RESTRICTED_KEY
 
     # Application URLs
     FRONTEND_URL: str
@@ -82,10 +89,14 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["development", "staging", "production"] = "production"
     DEBUG: bool = False
 
-    # CORS
+    # CORS — comma-separated list overrides the default FRONTEND_URL-only behaviour
+    ALLOWED_ORIGINS: str | None = None
+
     @property
     def CORS_ORIGINS(self) -> list[str]:
         """Get allowed CORS origins"""
+        if self.ALLOWED_ORIGINS:
+            return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
         origins = [self.FRONTEND_URL]
         if self.ENVIRONMENT == "development":
             origins.extend([
@@ -96,7 +107,7 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     RATE_LIMIT_SIGNUP: str = "5/hour"
-    RATE_LIMIT_LOGIN: str = "10/hour"
+    RATE_LIMIT_LOGIN: str = "10/15minutes"
 
     # Tier Balances (in cents)
     TIER_FREE_BALANCE: int = 1000000  # $10,000
