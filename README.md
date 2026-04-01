@@ -1,8 +1,12 @@
-# TradeForge
+# Trading Forge
 
 Paper trade crypto with real-time prices. Compete in contests. Track your performance.
 
-TradeForge is a full-stack crypto paper trading platform with live WebSocket price feeds, portfolio management, and a contest system. Built for learning crypto trading without risking real money.
+Trading Forge is a full-stack crypto paper trading platform with live WebSocket price feeds, portfolio management, a contest system, and an admin panel. Built for learning crypto trading without risking real money.
+
+**Works on any domain, any server — zero code changes required. Configure with `.env.production` only.**
+
+---
 
 ## Tech Stack
 
@@ -10,298 +14,399 @@ TradeForge is a full-stack crypto paper trading platform with live WebSocket pri
 |-------|-----------|
 | Frontend | Next.js 14, TypeScript, Tailwind CSS |
 | Backend | FastAPI 0.115, Python 3.12, Gunicorn + Uvicorn |
-| Database | PostgreSQL 16 (40+ tables, UUID PKs, DB triggers) |
+| Database | PostgreSQL 16 (UUID PKs, triggers, indexes) |
 | Cache | Redis 7 (price cache, rate limiting, sessions) |
-| Auth | JWT access tokens + httpOnly refresh cookies, Argon2id |
-| Prices | WebSocket feeds from Binance, Bybit, Kraken |
-| Infra | Docker Compose, multi-stage builds |
+| Auth | JWT (memory) + httpOnly refresh cookies, Argon2id |
+| Prices | WebSocket feeds — Binance, Bybit, Kraken |
+| Payments | Stripe (subscriptions + contest entry fees) |
+| Proxy | Nginx (HTTPS, security headers, rate limiting) |
+| Infra | Docker Compose, multi-stage builds, non-root containers |
+
+---
 
 ## Prerequisites
 
-- Docker and Docker Compose v2
-- Git
-- 8GB RAM recommended (4GB minimum)
-- Ports 3001 and 8000 available
+- **Docker** ≥ 24 and **Docker Compose** v2
+- A server with ports **80** and **443** open (production) or **8000/3001** (local)
+- A domain name pointed at your server (production) — or just `localhost` for local dev
+- `openssl` and `curl` installed on the host
 
-## Setup
+---
 
-### 1. Clone and configure
-
-```bash
-git clone https://github.com/Nfectious/Trade-Forge.git
-cd Trade-Forge
-cp .env.example .env.production
-```
-
-### 2. Generate secrets
-
-Fill in the required values in `.env.production`:
+## Quick Start (Local Development)
 
 ```bash
-# Generate secure values for these fields:
-openssl rand -base64 32 | tr -d "=+/" | cut -c1-32   # DB_PASSWORD
-openssl rand -base64 32 | tr -d "=+/" | cut -c1-32   # REDIS_PASSWORD
-openssl rand -hex 64                                   # JWT_SECRET_KEY
+git clone https://github.com/Nfectious/Trade-Forge-v4.git
+cd Trade-Forge-v4
+
+# Auto-generate secrets and start everything
+sudo ./deploy.sh
+# When prompted for domain, press Enter to use localhost
 ```
 
-Then update `DATABASE_URL` and `REDIS_URL` with the passwords you generated:
-
-```
-DATABASE_URL=postgresql+asyncpg://crypto_admin:YOUR_DB_PASSWORD@postgres:5432/crypto_platform
-REDIS_URL=redis://:YOUR_REDIS_PASSWORD@redis:6379/0
-```
-
-### 3. Start services
-
-**Development:**
-```bash
-docker compose up -d
-```
-
-**Production:**
-```bash
-docker compose -f docker-compose.prod.yml up -d
-```
-
-Or use the deployment script (runs pre-flight checks, backups, and health verification):
-```bash
-sudo ./scripts/deploy.sh
-```
-
-### 4. Verify
-
-```bash
-curl http://localhost:8000/health
-```
+Services will be available at:
 
 | Service | URL |
 |---------|-----|
 | Frontend | http://localhost:3001 |
 | Backend API | http://localhost:8000 |
 | API Docs (Swagger) | http://localhost:8000/docs |
-| API Docs (ReDoc) | http://localhost:8000/redoc |
-| Health Dashboard | http://localhost:3001/health |
+| Health Check | http://localhost:8000/health |
+
+---
+
+## Production Deployment
+
+### Step 1 — Clone the repo
+
+```bash
+git clone https://github.com/Nfectious/Trade-Forge-v4.git
+cd Trade-Forge-v4
+```
+
+### Step 2 — Configure environment
+
+```bash
+cp .env.example .env.production
+```
+
+Edit `.env.production` and fill in **every required value**:
+
+```bash
+# Required — generate with: openssl rand -base64 32 | tr -d "=+/" | cut -c1-32
+DB_PASSWORD=<strong-random-password>
+REDIS_PASSWORD=<strong-random-password>
+
+# Required — generate with: openssl rand -hex 64
+JWT_SECRET_KEY=<64-hex-chars>
+
+# Required — your domain (no trailing slash, no path)
+FRONTEND_URL=https://yourdomain.com
+BACKEND_URL=https://yourdomain.com/api
+BACKEND_WS_URL=wss://yourdomain.com/market/ws/prices
+
+# Update the connection strings with your generated passwords
+DATABASE_URL=postgresql+asyncpg://crypto_admin:YOUR_DB_PASSWORD@postgres:5432/crypto_platform
+REDIS_URL=redis://:YOUR_REDIS_PASSWORD@redis:6379/0
+```
+
+See [`.env.example`](.env.example) for the complete list with explanations.
+
+### Step 3 — Build and start
+
+```bash
+# One command — prompts for domain, generates secrets, builds, and starts
+sudo ./deploy.sh
+
+# Or, if you already have .env.production configured:
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+### Step 4 — Verify
+
+```bash
+curl https://yourdomain.com/health
+# Expected: {"status":"healthy","services":{"database":"up","redis":"up",...}}
+```
+
+### Step 5 — SSL / HTTPS
+
+If not using Cloudflare's edge SSL, install a certificate with Certbot:
+
+```bash
+apt install certbot python3-certbot-nginx
+certbot --nginx -d yourdomain.com
+```
+
+Place the cert files at:
+- `/etc/nginx/ssl/fullchain.pem`
+- `/etc/nginx/ssl/privkey.pem`
+
+Or mount them into the nginx container via `docker-compose.yml`.
+
+### Step 6 — Configure Stripe webhook (if using payments)
+
+1. Go to [Stripe Webhooks Dashboard](https://dashboard.stripe.com/webhooks)
+2. Add endpoint: `https://yourdomain.com/payments/webhook`
+3. Select events: `customer.subscription.*`, `invoice.payment_*`, `payment_intent.*`
+4. Copy the **Signing secret** → set `STRIPE_WEBHOOK_SECRET=whsec_...` in `.env.production`
+5. Restart backend: `docker compose restart backend`
+
+For local testing:
+```bash
+stripe listen --forward-to localhost:8000/payments/webhook
+```
+
+---
+
+## Environment Variables Reference
+
+All configuration lives in `.env.production`. See [`.env.example`](.env.example) for the complete template.
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL async connection string | `postgresql+asyncpg://user:pass@postgres:5432/db` |
+| `REDIS_URL` | Redis connection string | `redis://:password@redis:6379/0` |
+| `JWT_SECRET_KEY` | JWT signing secret (64+ hex chars) | `openssl rand -hex 64` |
+| `FRONTEND_URL` | Your frontend URL — used for CORS | `https://yourdomain.com` |
+| `DB_PASSWORD` | PostgreSQL password | strong random string |
+| `REDIS_PASSWORD` | Redis password | strong random string |
+
+### Optional — Email
+
+| Variable | Description |
+|----------|-------------|
+| `SMTP_HOST` | SMTP server (e.g. `smtp.resend.com`) |
+| `SMTP_PORT` | SMTP port (usually `587`) |
+| `SMTP_USER` | SMTP username |
+| `SMTP_PASSWORD` | SMTP password or API key |
+| `SMTP_FROM` | Sender address (e.g. `noreply@yourdomain.com`) |
+
+Email is optional — the app works without it, but email verification won't send.
+[Resend](https://resend.com) offers 3,000 free emails/month.
+
+### Optional — Stripe
+
+| Variable | Description | Where to get it |
+|----------|-------------|-----------------|
+| `STRIPE_SECRET_KEY` | Stripe secret or restricted key | [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys) |
+| `STRIPE_PUBLISHABLE_KEY` | Stripe publishable key | Same page |
+| `STRIPE_WEBHOOK_SECRET` | Webhook signing secret | [dashboard.stripe.com/webhooks](https://dashboard.stripe.com/webhooks) |
+| `STRIPE_PRICE_ID_PRO` | Stripe price ID for Pro tier | Stripe Products |
+| `STRIPE_PRICE_ID_ELITE` | Stripe price ID for Elite tier | Stripe Products |
+| `STRIPE_PRICE_ID_VALKYRIE` | Stripe price ID for Valkyrie tier | Stripe Products |
+
+Stripe is optional — the platform works fully without it (all tiers are free).
+
+### Optional — CORS / Networking
+
+| Variable | Description |
+|----------|-------------|
+| `ALLOWED_ORIGINS` | Comma-separated CORS origins. Defaults to `FRONTEND_URL` only. |
+| `BACKEND_WS_URL` | WebSocket URL used by the frontend |
+
+### Optional — Exchange API Keys
+
+| Variable | Description |
+|----------|-------------|
+| `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | Kraken private API access |
+| `COINGECKO_API_KEY` | CoinGecko API key for additional data |
+| `OPENROUTER_API_KEY` | AI trading features |
+
+---
 
 ## Project Structure
 
 ```
-Trade-Forge/
-├── docker-compose.yml          # Development services
+Trade-Forge-v4/
+├── deploy.sh                   # One-command deploy script
+├── docker-compose.yml          # Development + basic production
 ├── docker-compose.prod.yml     # Production (resource limits, log rotation)
-├── .env.example                # Environment template
+├── .env.example                # Complete environment template with comments
 │
 ├── backend/
-│   ├── Dockerfile
+│   ├── Dockerfile              # Non-root, multi-stage Python 3.12
 │   ├── requirements.txt
 │   ├── gunicorn.conf.py
 │   └── app/
-│       ├── main.py             # FastAPI app, middleware, startup/shutdown
+│       ├── main.py             # FastAPI app, middleware, startup validation
 │       ├── core/
-│       │   ├── config.py       # Pydantic settings
-│       │   ├── security.py     # JWT, password hashing, security headers
-│       │   ├── database.py     # Async SQLModel session
+│       │   ├── config.py       # Pydantic settings — all from env
+│       │   ├── security.py     # JWT, Argon2id, rate limiting
+│       │   ├── database.py     # Async SQLModel + PostgreSQL
 │       │   ├── redis.py        # Shared Redis client
-│       │   └── websocket_manager.py  # Exchange WS connections
-│       ├── models/
-│       │   ├── user.py         # User, UserLogin, UserCreate
-│       │   ├── trade.py        # TradingPair, Order, Trade
-│       │   ├── portfolio.py    # Portfolio, PortfolioHolding
-│       │   ├── wallet.py       # VirtualWallet, WalletTransaction
-│       │   └── contest.py      # Contest, ContestResponse
-│       ├── api/
-│       │   ├── auth.py         # /auth/* (register, login, refresh, me)
-│       │   ├── trading.py      # /trading/* (portfolio, orders, history)
-│       │   ├── market.py       # /market/* (prices, WebSocket endpoint)
-│       │   ├── wallet.py       # /wallet/* (balance)
-│       │   ├── users.py        # /users/*
-│       │   └── admin.py        # /admin/*
-│       └── services/
-│           ├── trade_executor.py       # Order creation, balance validation
-│           └── portfolio_calculator.py # Real-time portfolio valuation
+│       │   └── websocket_manager.py
+│       ├── models/             # SQLModel table definitions
+│       ├── api/                # Route handlers (auth, trading, admin, etc.)
+│       └── services/           # Business logic
 │
 ├── frontend/
-│   ├── Dockerfile
+│   ├── Dockerfile              # Multi-stage Node 18 Alpine
 │   ├── package.json
 │   ├── next.config.js
-│   ├── tailwind.config.ts
 │   ├── lib/
-│   │   ├── api.ts              # Axios client with interceptors + token refresh
-│   │   └── auth.tsx            # Auth context (login, logout, session)
-│   ├── hooks/
-│   │   ├── usePriceStream.ts   # WebSocket live price hook
-│   │   └── usePortfolio.ts     # Portfolio data hook
-│   └── app/
-│       ├── layout.jsx
-│       ├── page.jsx            # Landing page
-│       ├── login/page.jsx
-│       ├── register/
-│       ├── dashboard/
-│       ├── trade/page.tsx      # Trading interface
-│       ├── admin/
-│       └── health/page.jsx     # System health dashboard
+│   │   ├── api.ts              # Axios client — token in memory, not localStorage
+│   │   ├── auth.tsx            # Auth context with silent refresh
+│   │   └── toast.tsx           # Toast notifications
+│   ├── components/
+│   └── app/                    # Next.js App Router pages
 │
 ├── database/
-│   ├── init.sql                # Full schema (40+ tables, enums, triggers)
+│   ├── init.sql                # Full schema
 │   ├── seed.sql                # Trading pairs, tiers, achievements
 │   └── backups/
 │
-├── scripts/
-│   ├── deploy.sh               # Production deployment with rollback
-│   ├── backup.sh               # DB + Redis + env backup (7-day retention)
-│   └── status.sh               # System monitoring dashboard
+├── nginx/
+│   └── nginx.conf              # HTTPS, security headers, rate limiting, WebSocket
 │
-└── nginx/
-    └── crypto.conf             # Reverse proxy config
+└── scripts/
+    ├── deploy.sh               # Production deploy with rollback
+    ├── backup.sh               # DB + Redis + env backup
+    └── status.sh               # System health dashboard
 ```
 
-## API Endpoints
+---
 
-### Auth
+## API Reference
+
+### Auth — `/auth/*`
+
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/auth/register` | Create account |
-| POST | `/auth/login` | Login (returns JWT + sets refresh cookie) |
-| POST | `/auth/refresh` | Refresh access token (reads httpOnly cookie) |
-| GET | `/auth/me` | Get current user |
+| POST | `/auth/login` | Login — returns access token, sets httpOnly refresh cookie |
+| POST | `/auth/refresh` | Rotate refresh token (reads cookie) |
+| POST | `/auth/logout` | Revoke tokens, clear cookie |
+| GET | `/auth/me` | Current user profile |
+| POST | `/auth/forgot-password` | Send password reset email |
+| POST | `/auth/reset-password` | Set new password with reset token |
 
-### Trading
+### Trading — `/trading/*`
+
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/trading/portfolio` | Get portfolio with holdings |
-| POST | `/trading/order` | Place market order |
-| GET | `/trading/history` | Trade history |
+| GET | `/trading/portfolio` | Portfolio with holdings and P&L |
+| POST | `/trading/order` | Place market / limit / stop-limit order |
+| GET | `/trading/orders/open` | Open positions with live P&L |
+| GET | `/trading/orders/pending` | Pending limit orders |
+| PUT | `/trading/orders/{id}` | Modify stop-loss / take-profit |
+| DELETE | `/trading/orders/{id}` | Cancel pending order |
+| GET | `/trading/trades/history` | Trade history |
 
-### Market
+### Market — `/market/*`
+
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/market/prices` | Current cached prices |
-| WS | `/market/ws/prices` | Live price WebSocket stream |
+| GET | `/market/prices` | Cached live prices |
+| WS | `/market/ws/prices` | WebSocket price stream |
 
-### Wallet
+### Payments — `/payments/*`
+
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/wallet/balance` | Get wallet balance |
+| POST | `/payments/subscribe` | Start Stripe Checkout |
+| GET | `/payments/subscription` | Current subscription status |
+| DELETE | `/payments/subscription` | Cancel at period end |
+| GET | `/payments/billing-portal` | Stripe billing portal URL |
+| POST | `/payments/webhook` | Stripe webhook receiver |
 
-## Configuration
+### System
 
-All configuration is in `.env.production`. See `.env.example` for the full template with comments.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | DB + Redis + WebSocket status. 200 = healthy, 503 = degraded |
 
-**Required variables:**
+---
 
-| Variable | Description |
-|----------|-------------|
-| `DB_USER` / `DB_PASSWORD` | PostgreSQL credentials |
-| `DATABASE_URL` | Async connection string |
-| `REDIS_PASSWORD` / `REDIS_URL` | Redis credentials |
-| `JWT_SECRET_KEY` | Token signing key (64+ hex chars) |
-| `FRONTEND_URL` | CORS origin |
+## Security Features
 
-**Optional variables:**
+- **Passwords**: Argon2id hashing
+- **JWT**: Access tokens stored in JS memory (not localStorage) — XSS-safe. Refresh token in httpOnly cookie.
+- **Account lockout**: 5 failed logins → 15-minute lockout per email (Redis-backed)
+- **Rate limiting**: slowapi + Nginx — per-IP and per-user
+  - Register: 5/hour
+  - Login: 10/15 minutes
+  - Orders: 60/minute
+  - Payments: 10/minute
+  - Default: 100/minute
+- **CORS**: Restricted to `FRONTEND_URL` / `ALLOWED_ORIGINS` — no wildcards
+- **Security headers**: HSTS, X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy
+- **Stripe**: Webhook signature verification, server-side PaymentIntent confirmation
+- **Database**: All ports bound to 127.0.0.1 — not exposed externally
+- **Containers**: All run as non-root user
+- **Startup validation**: App refuses to start if DATABASE_URL, REDIS_URL, or JWT secret are missing or contain placeholder values
 
-| Variable | Description |
-|----------|-------------|
-| `SMTP_HOST` / `SMTP_PASSWORD` | Email verification (Resend, Gmail, etc.) |
-| `KRAKEN_API_KEY` | Kraken exchange API |
-| `COINGECKO_API_KEY` | CoinGecko price data |
-| `OPENROUTER_API_KEY` | AI trading features |
-| `STRIPE_RESTRICTED_KEY` | Payment processing for paid tiers |
+---
 
-## Scripts
+## Deployment Scripts
 
-### Deploy
+### `deploy.sh` — One-command deploy
+
+```bash
+sudo ./deploy.sh              # First-time setup: prompts for domain, generates secrets
+sudo ./deploy.sh --restart    # Rebuild and restart (uses existing .env.production)
+sudo ./deploy.sh --reset      # ⚠️ Destroy data volumes and start fresh
+```
+
+### `scripts/deploy.sh` — Production deploy with rollback
+
 ```bash
 sudo ./scripts/deploy.sh              # Full deploy (pull, build, health check)
-sudo ./scripts/deploy.sh --no-pull    # Build from local code only
-sudo ./scripts/deploy.sh --no-cache   # Force rebuild all layers
+sudo ./scripts/deploy.sh --no-pull    # Build from local code
+sudo ./scripts/deploy.sh --no-cache   # Force full rebuild
 sudo ./scripts/deploy.sh --rollback   # Roll back to previous version
 ```
 
-### Backup
+### `scripts/backup.sh` — Database backup
+
 ```bash
 sudo ./scripts/backup.sh
+# Backs up PostgreSQL, Redis snapshot, and .env.production
+# Deletes backups older than 7 days
 ```
 
-Backs up PostgreSQL (pg_dump + gzip), Redis (RDB snapshot), and `.env.production`. Deletes backups older than 7 days.
-
-Cron example (daily at 3 AM):
+Cron (daily at 3 AM):
 ```
-0 3 * * * cd /opt/Trade-Forge && ./scripts/backup.sh >> logs/backup.log 2>&1
+0 3 * * * cd /opt/Trade-Forge-v4 && ./scripts/backup.sh >> logs/backup.log 2>&1
 ```
 
-### Status
+### `scripts/status.sh` — System health dashboard
+
 ```bash
 ./scripts/status.sh
+# Container health, resource usage, DB connections, Redis memory, recent errors
 ```
 
-Shows container health, resource usage, DB connections/size, Redis memory, recent errors, disk space, and endpoint checks.
-
-## Production Deployment
-
-The production compose file (`docker-compose.prod.yml`) adds:
-
-- Resource limits (4G/2cpu Postgres, 2G/2cpu backend, 2G/1cpu Redis, 1G/1cpu frontend)
-- `restart: always` on all services
-- JSON log rotation (10MB, 3 files per container)
-- No source code bind mounts
-- Redis password authentication and RDB persistence
-
-### Reverse Proxy (Nginx)
-
-```bash
-sudo cp nginx/crypto.conf /etc/nginx/sites-available/crypto.yourdomain.com
-sudo ln -s /etc/nginx/sites-available/crypto.yourdomain.com /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-### SSL
-
-Use Cloudflare (set SSL mode to "Full (strict)") or certbot:
-```bash
-sudo certbot --nginx -d crypto.yourdomain.com
-```
-
-## Security
-
-- Passwords hashed with Argon2id
-- JWT access tokens (15 min TTL) in localStorage
-- Refresh tokens (7 day TTL) in httpOnly cookies only
-- Rate limiting on auth (5 register/hr, 10 login/hr) and trading (30 orders/min)
-- Security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options)
-- CORS restricted to configured frontend origin
-- `SELECT FOR UPDATE` row-level locking on trades (prevents balance race conditions)
-- All DB ports bound to 127.0.0.1 (localhost only)
-- Input validation: email max 255 chars, password max 128 chars
+---
 
 ## Troubleshooting
 
 **Backend won't start:**
 ```bash
-docker compose logs backend          # Check error output
-docker compose restart backend       # Retry after DB is ready
+docker compose logs backend          # Check for startup errors
+# Common causes: missing env vars, DB not ready yet
+docker compose restart backend       # Retry after DB is healthy
 ```
 
-**Frontend connection error:**
+**Health check failing:**
 ```bash
-curl http://localhost:8000/health     # Verify backend is running
+curl http://localhost:8000/health
+# Returns {"status":"degraded",...} — check which service is down
+docker compose ps                    # Check container states
 ```
 
 **Database connection refused:**
 ```bash
-docker compose ps postgres            # Check container status
-docker compose down -v && docker compose up -d   # Nuclear reset (destroys data)
+docker compose ps postgres           # Is it running?
+docker compose logs postgres         # Any init errors?
 ```
 
-**Redis auth error ("NOAUTH"):**
+**Redis auth error (`NOAUTH`):**
 ```bash
-grep REDIS_PASSWORD .env.production   # Verify password is set
+grep REDIS_PASSWORD .env.production  # Confirm password is set
 docker compose restart redis backend
 ```
 
-## Community
+**CORS errors in browser:**
+```bash
+grep FRONTEND_URL .env.production    # Must exactly match the browser's origin (no trailing slash)
+grep ALLOWED_ORIGINS .env.production # Add extra origins here if needed
+```
 
-- [TradeForge Discord](https://discord.gg/dUFzBjJT6N)
-- [GitHub Issues](https://github.com/Nfectious/Trade-Forge/issues)
+**Stripe webhooks not received:**
+```bash
+# Verify the webhook endpoint is accessible:
+curl -X POST https://yourdomain.com/payments/webhook
+# Should return 400 (signature check fails on empty body — that's correct)
+
+# For local dev, use Stripe CLI:
+stripe listen --forward-to localhost:8000/payments/webhook
+```
+
+---
 
 ## License
 
-Proprietary - All Rights Reserved
+MIT License — use freely, attribution appreciated.
